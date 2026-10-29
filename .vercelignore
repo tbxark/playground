@@ -1,0 +1,4 @@
+# Local settings export with real API keys. Not in public/, so Vite never copies
+# it into dist; this keeps a `vercel` CLI deploy from uploading it either.
+config.json
+dist
