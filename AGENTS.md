@@ -11,7 +11,7 @@ Run from this directory (playground), not the repo root:
 - `pnpm preview` — serve the built output (same port 5180).
 - Repo-root equivalents: `pnpm playground` / `pnpm playground:build`. Lint (oxlint, config `../.oxlintrc.json`) is run from the repo root via `pnpm lint`.
 
-Verify changes with `pnpm build`; type errors surface there because tsconfig is `strict` and extends `../tsconfig.base.json`.
+Verify changes with `pnpm build`; type errors surface there because tsconfig is `strict` and self-contained. This directory is its own git repository and Vercel's build root, so `tsconfig.json` must not `extends` a file outside it (the monorepo's `../tsconfig.base.json` is absent from the deployed checkout) — keep the compiler options inline.
 
 ## Architecture
 
