@@ -145,6 +145,11 @@ dist
 # Local settings export; contains real API keys. Never commit it.
 config.json
 
+# Wrangler's local build/cache state.
+.wrangler/
+
+.oil-ui
+
 # Review Forge artifacts: process output, not product code.
 code_review/
 /.claude/skills

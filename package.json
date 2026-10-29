@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy:cf": "pnpm build && wrangler deploy"
   },
   "dependencies": {
     "@huggingface/transformers": "4.3.2",
@@ -43,6 +44,7 @@
     "@vitejs/plugin-react": "^5.2.0",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.9.3",
-    "vite": "^7.2.7"
+    "vite": "^7.2.7",
+    "wrangler": "^4.154.0"
   }
 }

@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aiimage-playground",
+  "compatibility_date": "2026-10-29",
+  // Static-only Worker: Vite's dist/ is the whole deployment. Vercel serves the
+  // same dist/ with vercel.json, so the two hosts stay behaviourally identical.
+  //
+  // When the Hono API lands, add:
+  //   "main": "server/adapters/worker.ts",
+  //   "assets": { ..., "binding": "ASSETS", "run_worker_first": ["/api/*"] }
+  // run_worker_first is required because not_found_handling below would
+  // otherwise answer GET /api/* with index.html.
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}

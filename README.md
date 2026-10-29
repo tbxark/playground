@@ -83,6 +83,17 @@ pnpm build
 
 ---
 
+## Deployment
+
+Both hosts serve the same `dist/`:
+
+- **Vercel** — `vercel.json` sets the Vite framework, the SPA rewrite and immutable caching for `/assets/*`.
+- **Cloudflare Workers** — `pnpm deploy:cf` builds and runs `wrangler deploy`. `wrangler.jsonc` serves `dist/` as static assets with single-page-application fallback, and `public/_headers` applies the same cache policy.
+
+Cloudflare caps a single static asset at 25 MiB, so the background-removal runtime stays on the standard ONNX Runtime wasm build (13.6 MiB); the asyncify/WebGPU variant (25.6 MiB) is removed from the bundle at build time. There is no server yet: when the Hono API is added it should live in `server/` and claim `/api/*` through `run_worker_first`, while the Vercel build keeps working as a pure frontend.
+
+---
+
 ## Common shortcuts
 
 - `⌘/Ctrl + Z`: undo the last edit on the current canvas; `⌘/Ctrl + ⇧ + Z` or `⌘/Ctrl + Y` redoes it. The free canvas covers card add/remove/drag/set-as-main/mask strokes/applied image edits/clear-canvas; the workflow covers node and edge add/remove/edit/drag/clear/import/reset.

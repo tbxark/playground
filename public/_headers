@@ -1,0 +1,11 @@
+# Cloudflare Workers Static Assets reads this file from the deployed output
+# directory (Vite copies public/ into dist/). Vercel keeps using the headers in
+# vercel.json; this file is simply an inert asset there.
+
+# Hashed build outputs never change under the same name.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The SPA entry must be revalidated so a new deploy is picked up immediately.
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate

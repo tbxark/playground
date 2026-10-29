@@ -1,0 +1,13 @@
+# This directory is also its own git repository (the GitHub origin Cloudflare
+# and Vercel build from), so a standalone checkout needs its own build-script
+# policy: pnpm 12 fails an install that leaves dependency build scripts
+# unapproved. `esbuild` and `workerd` must run; the ONNX/protobuf installers are
+# not needed by the browser app.
+packages:
+  - "."
+
+allowBuilds:
+  esbuild: true
+  onnxruntime-node: false
+  protobufjs: false
+  workerd: true

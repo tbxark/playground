@@ -1,6 +1,9 @@
 import { env, pipeline } from "@huggingface/transformers";
-import wasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
-import mjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url";
+// The standard CPU build, not the asyncify one: asyncify targets WebGPU/WebNN
+// and is only needed for proxy mode (disabled below). It is also 25.6 MiB,
+// over Cloudflare's 25 MiB per-asset limit; this build is 13.6 MiB.
+import wasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
+import mjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
 import type {
   BackgroundRemovalRequest,
   BackgroundRemovalResponse,
