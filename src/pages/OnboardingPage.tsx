@@ -17,6 +17,7 @@ import {
   MoonIcon,
   PlusIcon,
   RotateCcwIcon,
+  ServerIcon,
   ShieldCheckIcon,
   SparklesIcon,
   SunIcon,
@@ -37,6 +38,10 @@ import {
   modelDisplayName,
   testImageServiceConnection,
 } from "../services/imageService";
+import { applyServerLlmOverlay, buildServerAwareRequest } from "../services/effectiveConfig";
+import { mergeServerDefaultModels } from "../services/serverModels";
+import { serverFeatureEnabled } from "@/features/serverMode";
+import { useServerStore } from "../stores/useServerStore";
 import { changeLocale } from "@/i18n";
 import { cn } from "@/utils/cn";
 
@@ -112,7 +117,12 @@ export function OnboardingPage() {
   } | null>(null);
 
   const currentLocale = i18n.language.startsWith("zh") ? "zh" : "en";
-  const hasImageKey = imageConfig.apiKey.trim().length > 0;
+  const serverToken = useServerStore((s) => s.token);
+  const [serverUsername, setServerUsername] = useState("");
+  const [serverPassword, setServerPassword] = useState("");
+  const [serverLoginBusy, setServerLoginBusy] = useState(false);
+  const [serverLoginResult, setServerLoginResult] = useState<Result | null>(null);
+  const hasImageKey = imageConfig.apiKey.trim().length > 0 || serverToken !== null;
   const enabledModels = imageConfig.models.filter((model) =>
     imageConfig.enabledModelIds.includes(model.id)
   );
@@ -159,11 +169,16 @@ export function OnboardingPage() {
     setIsTestingImage(true);
     setImageTestResult(null);
     try {
+      const request = buildServerAwareRequest(
+        "image",
+        { apiBaseUrl: snapshot.apiBaseUrl, apiKey: snapshot.apiKey },
+        { corsProxy: snapshot.corsProxy, corsProxyMode: snapshot.corsProxyMode }
+      );
       const result = await testImageServiceConnection(
-        snapshot.apiBaseUrl,
-        snapshot.apiKey,
-        snapshot.corsProxy,
-        snapshot.corsProxyMode
+        request.apiBaseUrl,
+        request.apiKey,
+        request.corsProxy,
+        request.corsProxyMode
       );
       if (!isCurrentImageRequest(snapshot)) return;
       setImageTestResult(result);
@@ -183,11 +198,16 @@ export function OnboardingPage() {
     setIsFetchingModels(true);
     setModelsResult(null);
     try {
+      const request = buildServerAwareRequest(
+        "image",
+        { apiBaseUrl: snapshot.apiBaseUrl, apiKey: snapshot.apiKey },
+        { corsProxy: snapshot.corsProxy, corsProxyMode: snapshot.corsProxyMode }
+      );
       const models = await fetchOnlineModels(
-        snapshot.apiBaseUrl,
-        snapshot.apiKey,
-        snapshot.corsProxy,
-        snapshot.corsProxyMode
+        request.apiBaseUrl,
+        request.apiKey,
+        request.corsProxy,
+        request.corsProxyMode
       );
       if (!isCurrentImageRequest(snapshot)) return;
       setFetchedModels(models);
@@ -255,11 +275,12 @@ export function OnboardingPage() {
     setIsFetchingLlm(true);
     setLlmFetchResult(null);
     try {
+      const request = applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode });
       const result = await fetchOnlineLlmModels(
-        llmConfig.apiBaseUrl,
-        llmConfig.apiKey,
-        corsProxy,
-        corsProxyMode
+        request.apiBaseUrl,
+        request.apiKey,
+        request.corsProxy,
+        request.corsProxyMode
       );
       setLlmFetchedModels(result.textModels, result.visionModels);
       // Use fresh state: the user may have typed a model ID while the request
@@ -285,6 +306,32 @@ export function OnboardingPage() {
       });
     } finally {
       setIsFetchingLlm(false);
+    }
+  };
+
+  // Shared server login (optional-login builds only). Logging in counts as
+  // "has a service": the proxy carries the real key, so no local key is needed.
+  const handleServerLogin = async () => {
+    if (!serverUsername.trim() || !serverPassword || serverLoginBusy) return;
+    setServerLoginBusy(true);
+    setServerLoginResult(null);
+    const result = await useServerStore.getState().login(serverUsername.trim(), serverPassword);
+    setServerLoginBusy(false);
+    if (result === "ok") {
+      setServerPassword("");
+      const merged = mergeServerDefaultModels();
+      void useServerStore.getState().checkHealth();
+      setServerLoginResult({
+        success: true,
+        message:
+          merged > 0
+            ? t("onboarding.server.loginOkWithModels", { count: merged })
+            : t("onboarding.server.loginOk"),
+      });
+    } else if (result === "invalid") {
+      setServerLoginResult({ success: false, message: t("onboarding.server.invalidCredentials") });
+    } else {
+      setServerLoginResult({ success: false, message: t("onboarding.server.unreachable") });
     }
   };
 
@@ -525,6 +572,109 @@ export function OnboardingPage() {
           </aside>
 
           <section className="min-w-0 space-y-5">
+            {/* Shared server login (optional-login builds only) */}
+            {serverFeatureEnabled && (
+              <div className="rounded-3xl border border-border bg-card/80 p-4 shadow-xl sm:p-6">
+                <div className="flex items-start gap-3">
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-primary/30 bg-primary/15 text-primary">
+                    <ServerIcon className="size-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="flex flex-wrap items-center gap-2 text-sm font-bold text-foreground">
+                      {t("onboarding.server.cardTitle")}
+                      <Badge
+                        variant="outline"
+                        className="border-primary/30 bg-primary/10 text-[10px] text-primary"
+                      >
+                        {t("onboarding.server.recommended")}
+                      </Badge>
+                    </h2>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      {t("onboarding.server.desc")}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-4">
+                  {serverToken ? (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                        <CheckCircle2Icon className="size-4" />
+                        {t("onboarding.server.loggedIn")}
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          {t("onboarding.server.takenOverNote")}
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => useServerStore.getState().logout()}
+                        >
+                          {t("onboarding.server.logout")}
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs font-semibold text-foreground">
+                            {t("onboarding.server.usernameLabel")}
+                          </Label>
+                          <Input
+                            value={serverUsername}
+                            onChange={(event) => setServerUsername(event.target.value)}
+                            placeholder={t("onboarding.server.usernamePlaceholder")}
+                            autoComplete="username"
+                            className="h-10 bg-background border-border"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs font-semibold text-foreground">
+                            {t("onboarding.server.passwordLabel")}
+                          </Label>
+                          <Input
+                            type="password"
+                            value={serverPassword}
+                            onChange={(event) => setServerPassword(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") void handleServerLogin();
+                            }}
+                            placeholder={t("onboarding.server.passwordPlaceholder")}
+                            autoComplete="current-password"
+                            className="h-10 bg-background border-border"
+                          />
+                        </div>
+                      </div>
+                      {serverLoginResult && (
+                        <ResultAlert
+                          title={
+                            serverLoginResult.success
+                              ? t("onboarding.server.loginOk")
+                              : t("onboarding.server.loginFailedTitle")
+                          }
+                          result={serverLoginResult}
+                        />
+                      )}
+                      <div className="flex items-center gap-3">
+                        <Button
+                          onClick={handleServerLogin}
+                          disabled={serverLoginBusy || !serverUsername.trim() || !serverPassword}
+                        >
+                          {serverLoginBusy && <Loader2Icon className="size-4 animate-spin" />}
+                          {t("onboarding.server.login")}
+                        </Button>
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          {t("onboarding.server.loginHint")}
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Image generation service */}
             <div className="rounded-3xl border border-border bg-card/80 p-4 shadow-xl sm:p-6">
               <div className="flex items-start gap-3">
@@ -538,7 +688,7 @@ export function OnboardingPage() {
                       variant="outline"
                       className="border-primary/30 bg-primary/10 text-[10px] text-primary"
                     >
-                      {t("onboarding.service.required")}
+                      {t(serverToken ? "onboarding.service.notRequired" : "onboarding.service.required")}
                     </Badge>
                   </h2>
                   <p className="mt-1 text-xs leading-relaxed text-muted-foreground">

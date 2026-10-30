@@ -80,7 +80,8 @@
       "noModels": "The endpoint returned no usable models. Check compatibility, or add a model ID manually below.",
       "proxyToggle": "Network blocked? Configure a CORS proxy",
       "proxyLabel": "Proxy URL",
-      "proxyHint": "Used only when needed: direct first, and a host blocked by CORS is retried through https://<proxy>/<target-url>. Shares the same proxy setting as Settings."
+      "proxyHint": "Used only when needed: direct first, and a host blocked by CORS is retried through https://<proxy>/<target-url>. Shares the same proxy setting as Settings.",
+      "notRequired": "Not needed while logged in"
     },
     "models": {
       "cardTitle": "Choose image models",
@@ -119,6 +120,25 @@
       "assistantOff": "Off",
       "start": "Start creating",
       "skip": "Set up later"
+    },
+    "server": {
+      "cardTitle": "Use shared service",
+      "recommended": "Recommended",
+      "desc": "Log in with the account provided by the site operator to use the hosted models without entering any API key. You can skip this and configure your own keys below.",
+      "loggedIn": "Logged in — the shared service is ready to use.",
+      "takenOverNote": "Your own keys are not needed while logged in.",
+      "logout": "Log out",
+      "usernameLabel": "Username",
+      "usernamePlaceholder": "Username",
+      "passwordLabel": "Password",
+      "passwordPlaceholder": "Password",
+      "login": "Log in",
+      "loginHint": "Account provided by the site operator.",
+      "loginOk": "Login succeeded.",
+      "loginOkWithModels": "Login succeeded. {{count}} shared models were enabled for you.",
+      "loginFailedTitle": "Login failed",
+      "invalidCredentials": "Wrong username or password.",
+      "unreachable": "Could not reach the login endpoint. Check your network and try again."
     }
   },
   "config": {
@@ -853,7 +873,8 @@
       "prompts": "Prompt library",
       "promptsDesc": "Your own title/prompt entries",
       "system": "Scheduling, storage & backup",
-      "systemDesc": "Concurrency, gallery and JSON export"
+      "systemDesc": "Concurrency, gallery and JSON export",
+      "server": "Shared Server"
     },
     "navAriaLabel": "Settings sections",
     "network": {
@@ -915,7 +936,34 @@
       "resetDone": "App settings restored to defaults; gallery works are unaffected"
     },
     "title": "Global System Settings",
-    "importInvalidShape": "This file is not a valid settings export (expected a JSON object)"
+    "importInvalidShape": "This file is not a valid settings export (expected a JSON object)",
+    "server": {
+      "title": "Shared Server",
+      "badge": "Optional",
+      "desc": "Log in to use the model service hosted by this deployment. Your requests go through the site's own server, which holds the API key — you never need to enter one. Logging out switches back to your own keys.",
+      "unreachableTitle": "Server unreachable",
+      "unreachableDesc": "No backend answered at /api/health. The server may not be deployed, or it is temporarily offline. You can keep using your own API keys.",
+      "authReady": "Login ready",
+      "authMissing": "Login not configured",
+      "llmReady": "Assistant upstream ready",
+      "llmMissing": "No assistant upstream",
+      "imageReady": "Image upstream ready",
+      "imageMissing": "No image upstream",
+      "loggedIn": "Logged in",
+      "expiresAt": "Session expires: {{time}}",
+      "logout": "Log out",
+      "takenOverNote": "While logged in, image generation and the prompt assistant go through the shared server. Your own keys stay saved below and take effect again after you log out.",
+      "usernameLabel": "Username",
+      "usernamePlaceholder": "Username",
+      "passwordLabel": "Password",
+      "passwordPlaceholder": "Password",
+      "login": "Log in",
+      "loginHint": "Ask the site operator for an account.",
+      "loginOk": "Logged in.",
+      "loginOkWithModels": "Logged in. {{count}} shared models were enabled for you.",
+      "invalidCredentials": "Wrong username or password.",
+      "unreachable": "Could not reach the login endpoint. Check your network and try again."
+    }
   },
   "shell": {
     "app": {
@@ -1369,5 +1417,8 @@
     "pasteImage": "Paste an image onto the free canvas",
     "zoom": "⌘/Ctrl + scroll to zoom",
     "historyNote": "Undo restores structure and editable fields only; generated results are not restored and must be re-run. History is cleared on reload."
+  },
+  "server": {
+    "sessionExpired": "Server session expired, please log in again."
   }
 }

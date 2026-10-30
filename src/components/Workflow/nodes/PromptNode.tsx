@@ -13,6 +13,7 @@ import { Textarea } from "../../ui/textarea";
 import { Input } from "../../ui/input";
 import { useConfigStore } from "../../../stores/useConfigStore";
 import { polishPrompt } from "../../../services/llmAssistant";
+import { applyServerLlmOverlay } from "../../../services/effectiveConfig";
 
 const PORTS: WorkflowPortDef[] = [
   { id: "output", name: "workflow.port.prompt", type: "text", direction: "output" },
@@ -41,7 +42,11 @@ export function PromptNode({ node }: { node: WorkflowNode }) {
     if (!promptText.trim()) return toast.warning(t("workflow.prompt.enterBasePromptFirst"));
     setIsPolishing(true);
     try {
-      const res = await polishPrompt(promptText, { ...llmConfig, corsProxy, corsProxyMode }, "enhance");
+      const res = await polishPrompt(
+        promptText,
+        applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode }),
+        "enhance"
+      );
       updateNodeData(node.id, { promptText: res });
       toast.success(t("workflow.prompt.polishDone"));
     } catch (e) {

@@ -90,7 +90,51 @@ Both hosts serve the same `dist/`:
 - **Vercel** — `vercel.json` sets the Vite framework, the SPA rewrite and immutable caching for `/assets/*`.
 - **Cloudflare Workers** — `pnpm deploy:cf` builds and runs `wrangler deploy`. `wrangler.jsonc` serves `dist/` as static assets with single-page-application fallback, and `public/_headers` applies the same cache policy.
 
-Cloudflare caps a single static asset at 25 MiB, so the background-removal runtime stays on the standard ONNX Runtime wasm build (13.6 MiB); the asyncify/WebGPU variant (25.6 MiB) is removed from the bundle at build time. There is no server yet: when the Hono API is added it should live in `server/` and claim `/api/*` through `run_worker_first`, while the Vercel build keeps working as a pure frontend.
+Cloudflare caps a single static asset at 25 MiB, so the background-removal runtime stays on the standard ONNX Runtime wasm build (13.6 MiB); the asyncify/WebGPU variant (25.6 MiB) is removed from the bundle at build time.
+
+### Optional shared server
+
+The build flag `VITE_SERVER_MODE` picks the flavor:
+
+- `off` (default) — **pure frontend**: `pnpm build` / `pnpm deploy:cf` behave exactly like the pre-server app. No login UI, no `/api/*` calls.
+- `optional` — **shared build**: `pnpm build:server` / `pnpm deploy:cf:server`. The app offers an optional login (Settings → Shared Server, and a card on the onboarding page). Logged-in users route image generation, async task polling and the prompt assistant through the site's own server, which verifies a JWT and injects the real upstream key; logging out restores the user's own keys. Login is never required.
+
+There are two interchangeable implementations of this API: the Hono app in `functions/` (used by Cloudflare Workers and Vercel) and the Go binary in `server/` (for a plain VPS and the Docker image — see below). Both speak the same contract from `shared/contracts.ts`.
+
+The Hono app (`functions/`, contracts in `shared/`) claims `/api/*` on both hosts:
+
+- **Cloudflare** — `wrangler.jsonc` sets `main: functions/adapters/worker.ts` and `run_worker_first: ["/api/*"]` (without it the SPA fallback would answer `/api/*` with `index.html`). Configure secrets with `wrangler secret put`.
+- **Vercel** — `api/[[...route]].ts` re-exports an esbuild bundle of `functions/vercel.ts` (built by `scripts/bundle-vercel-api.mjs` inside the `buildCommand`, because @vercel/node cannot resolve imports outside `api/` in ESM projects). The SPA rewrite excludes `/api` and an explicit `/api/(.*)` rewrite routes multi-segment API paths into the function — details in AGENTS.md Gotchas. Fill `.env.local`, then `pnpm vercel:env` pushes every variable into the linked project (re-running overwrites) and `pnpm deploy:vercel` deploys to production. The shared build needs `VITE_SERVER_MODE=optional` among the pushed variables (it is the build-time login flag).
+
+Environment variables (see `.env.example`; locally put them in `.env.local`, which `pnpm dev` loads automatically):
+
+| Variable | Purpose |
+| --- | --- |
+| `AUTH_USERNAME` / `AUTH_PASSWORD` | Single shared login account (all three required to enable login) |
+| `JWT_SECRET` | HS256 signing secret for login tokens (default lifetime 7 days, `JWT_TTL_HOURS`) |
+| `LLM_BASE_URL` / `LLM_API_KEY` | OpenAI-compatible upstream for the assistant; base URL must include its version segment (e.g. `https://gateway.example.com/v1`) |
+| `IMAGE_BASE_URL` / `IMAGE_API_KEY` | Upstream for image generation; falls back to `LLM_*` when unset |
+| `SERVER_DEFAULT_MODELS` | Optional comma-separated model ids auto-enabled for a user after their first login |
+| `HOST` / `PORT` | Go server only: listen address (default `127.0.0.1:8080`; the Docker image sets `0.0.0.0:8080`) |
+| `ENV_FILE` | Go server only: optional dotenv file to load at startup (already-exported variables win) |
+| `TRUST_PROXY_HEADERS` | Go server only: set `true` only when a trusted reverse proxy overwrites `X-Forwarded-For` / `CF-Connecting-IP` with the real client IP (default `false`, so login throttling keys on the TCP peer) |
+
+Login attempts are rate-limited per IP, credentials are compared in constant time, and the proxy only forwards a closed set of upstream paths (`models`, `chat/completions`, `images/*`, `tasks/*`). The browser only ever holds the login JWT — real API keys never leave the server.
+
+> Note: the JWT lives in `localStorage`, so the shared build inherits the usual XSS exposure of any localStorage token. Use a dedicated upstream key with a spending limit.
+
+### Self-hosted Go server (VPS / Docker)
+
+`server/` reimplements the same API with the Go standard library only (`net/http`, `go:embed`, and a fixed-profile HS256 JWT in `token.go`). It also serves the built SPA, so a VPS needs one static binary — no Node, Bun or Workers runtime, and no third-party Go module.
+
+- **Build a binary** — `pnpm build:go` runs the `VITE_SERVER_MODE=optional` web build, copies `dist/` into `server/web/static`, and compiles `server/aiimage-playground`. Use `VITE_SERVER_MODE=off ./server/build.sh` for a pure-frontend binary, or `OUT=/path/to/app` to choose the output path. A bare `go build` embeds whatever is already in `server/web/static`, so rerun the script after frontend changes.
+- **Run it** — `cd server && ENV_FILE=../.env.local ./aiimage-playground` (or export the variables yourself). `HOST` defaults to `127.0.0.1`; set `HOST=0.0.0.0` to accept remote connections.
+- **Docker (prebuilt image)** — `.github/workflows/docker.yaml` publishes `ghcr.io/tbxark/playground` as one multi-arch manifest (`linux/amd64`, `linux/arm64`) on every push to `master` (`:latest`) and on `v*` tags (also tagged with the tag name), via `TBXark/docker-action`. A host needs neither the source nor a build: `cp .env.example .env.local`, fill it in, then `docker compose pull && docker compose up -d`; pin a release with `IMAGE_TAG=v1.2.3`. The package starts out private — either `docker login ghcr.io` with a token that has `read:packages`, or make the package public under the repository's Packages settings. Set the `BACKUP_REGISTRY` / `BACKUP_USERNAME` / `BACKUP_PASSWORD` repo secrets to mirror the same manifest to a second registry (e.g. Docker Hub); the action always builds with the Dockerfile's default `VITE_SERVER_MODE=optional` and does not forward build args.
+- **Docker (local build)** — `docker compose -f docker-compose.build.yml up -d --build`. For a plain `docker run` deploy, build for the VPS architecture explicitly: `docker build --platform linux/amd64 -t aiimage-playground .` (a plain build on Apple Silicon produces an arm64 image that will not run on a typical x86_64 VPS; building on the VPS or using buildx also works). Then `docker run -d --name aiimage -p 8080:8080 --env-file .env.local aiimage-playground`. The root `Dockerfile` is a three-stage build (Node builds `dist/`, Go embeds it, distroless runtime), with `VITE_SERVER_MODE=optional` as the default build arg and a built-in `HEALTHCHECK` that runs the binary with `-healthcheck`.
+- **Behind a reverse proxy** — preserve the `Host` header and have the proxy **overwrite** `X-Forwarded-For` with the immediate client IP (`proxy_set_header X-Forwarded-For $remote_addr;` in nginx, or the equivalent in Caddy), then set `TRUST_PROXY_HEADERS=true`. With the flag off (the default) forwarded IPs are ignored and login throttling keys on the TCP peer; with it on, a proxy that appends instead of overwriting lets clients spoof the limiter key. Also configure request/body timeouts at the proxy (the binary caps request reads at 10 minutes) and terminate TLS there.
+- **Token revocation** — removing `AUTH_USERNAME` / `AUTH_PASSWORD` stops new logins but does not revoke already-issued tokens; rotate `JWT_SECRET` to invalidate every session immediately.
+- **Contract** — `server/` duplicates the routes and JSON shapes from `shared/contracts.ts`; change both implementations together. `go test ./...` covers login/lockout, proxy forwarding and the SPA fallback from `server/`.
+
 
 ---
 

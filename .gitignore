@@ -145,6 +145,13 @@ dist
 # Local settings export; contains real API keys. Never commit it.
 config.json
 
+# Server credentials for local dev (vite dev middleware + wrangler dev).
+# Template lives in .env.example. Never commit real values.
+.dev.vars
+
+# Generated Vercel function bundle (scripts/bundle-vercel-api.mjs).
+api/_handler.cjs
+
 # Wrangler's local build/cache state.
 .wrangler/
 
@@ -159,3 +166,13 @@ code_review/
 /code_review
 config.json
 skills-lock.json
+.vercel
+.env*
+
+# Keep the env template committable despite .env*
+!.env.example
+
+# Go server build artifacts (SPA is embedded at build time).
+server/aiimage-playground
+server/web/static/*
+!server/web/static/.gitkeep

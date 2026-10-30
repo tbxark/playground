@@ -6,15 +6,24 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:server": "VITE_SERVER_MODE=optional pnpm build",
     "preview": "vite preview",
-    "deploy:cf": "pnpm build && wrangler deploy"
+    "deploy:cf": "pnpm build && wrangler deploy",
+    "deploy:cf:server": "VITE_SERVER_MODE=optional pnpm build && wrangler deploy",
+    "vercel:env": "bash scripts/push-vercel-env.sh",
+    "bundle:api": "node scripts/bundle-vercel-api.mjs",
+    "build:go": "bash server/build.sh",
+    "start:go": "./server/aiimage-playground",
+    "deploy:vercel": "vercel deploy --prod"
   },
   "dependencies": {
+    "@hono/node-server": "^2.1.5",
     "@huggingface/transformers": "4.3.2",
     "@xyflow/react": "^12.12.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "hono": "^4.13.14",
     "i18next": "^26.5.11",
     "idb": "^8.0.3",
     "jszip": "^3.10.1",
@@ -42,8 +51,10 @@
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",
+    "esbuild": "^0.28.2",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.9.3",
+    "vercel": "^65.5.0",
     "vite": "^7.2.7",
     "wrangler": "^4.154.0"
   }

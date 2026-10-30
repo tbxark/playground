@@ -1,0 +1,64 @@
+# Self-hosted AI Image Playground — pull-only deploy: no source checkout, no
+# build step. The image is published to GHCR by .github/workflows/docker.yaml
+# for linux/amd64 and linux/arm64, so this file runs unchanged on a VPS, a NAS
+# or an Apple Silicon machine.
+#
+#   cp .env.example .env.local        # AUTH_* / JWT_SECRET / LLM_* / IMAGE_*
+#   docker compose pull
+#   docker compose up -d
+#   curl http://127.0.0.1:8080/api/health
+#
+# Building from source instead: docker-compose.build.yml.
+#
+# No volume is needed: images, gallery and settings all live in the browser
+# (localStorage + IndexedDB). The env file only supplies the server-side
+# credentials the proxy injects into upstream requests.
+#
+# Private package? Run `docker login ghcr.io` with a token that has
+# read:packages first, or make the package public in the repo's Packages
+# settings (Package settings → Change visibility).
+#
+# Requires Docker Compose >= 2.24 for the `env_file.required` object form; on
+# older versions change it to `env_file: [.env.local]` and always create the file.
+#
+# Behind a reverse proxy (Caddy/nginx/Traefik): preserve the Host header,
+# terminate TLS there, make the proxy OVERWRITE X-Forwarded-For with the
+# immediate client IP, and only then set TRUST_PROXY_HEADERS=true in .env.local.
+# Otherwise every client shares one login-throttle bucket; with a proxy that
+# appends instead of overwriting, the header becomes spoofable.
+
+name: aiimage-playground
+
+services:
+  app:
+    # IMAGE_TAG=v1.2.3 pins a published release; plain `latest` follows master.
+    image: ghcr.io/tbxark/playground:${IMAGE_TAG:-latest}
+    container_name: aiimage-playground
+    restart: unless-stopped
+
+    # Runtime secrets and upstreams. Optional so the container also starts
+    # without it; with no AUTH_* / LLM_* set the SPA loads but /api stays
+    # unconfigured.
+    env_file:
+      - path: .env.local
+        required: false
+
+    # Container-side listen address; must match the right-hand side of `ports`.
+    # Everything else (TRUST_PROXY_HEADERS, LOG_LEVEL, JWT_TTL_HOURS, ...) comes
+    # from .env.local — `environment` entries would override it, so leave them out.
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+
+    ports:
+      # Change the host port with PLAYGROUND_PORT=9000 in the shell or .env.
+      - "${PLAYGROUND_PORT:-8080}:8080"
+
+    # The image already declares HEALTHCHECK (`/aiimage-playground -healthcheck`
+    # polls GET /api/health), so `docker compose ps` shows healthy/unhealthy.
+
+    # Defense in depth: the image is distroless and already runs as nonroot.
+    security_opt:
+      - no-new-privileges:true
+    # The binary writes nothing to disk, so this is safe to enable.
+    # read_only: true

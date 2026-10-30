@@ -4,6 +4,7 @@ import { dataUrlToBlob, fetchAsBlob } from "../utils/file";
 import { generateNanoid } from "../utils/nanoid";
 import { extractErrorMessage } from "../utils/error";
 import { dispatchGenerate } from "../services/providers/dispatcher";
+import { applyServerImageOverlay } from "../services/effectiveConfig";
 import {
   deleteHistoryRecord,
   saveToHistory,
@@ -267,10 +268,17 @@ async function executeTask(task: TaskItem) {
   const startTime = Date.now();
 
   try {
-    const imageUrl = await dispatchGenerate(provider, {
+    const { provider: effectiveProvider, proxy: effectiveProxy } = applyServerImageOverlay(
+      provider,
+      {
+        corsProxy: configState.corsProxy || undefined,
+        corsProxyMode: configState.corsProxyMode,
+      }
+    );
+    const imageUrl = await dispatchGenerate(effectiveProvider, {
       ...task.input,
-      corsProxy: configState.corsProxy || undefined,
-      corsProxyMode: configState.corsProxyMode,
+      corsProxy: effectiveProxy.corsProxy,
+      corsProxyMode: effectiveProxy.corsProxyMode,
       signal: controller.signal,
       onProgress: ({ status, progress }) => {
         useQueueStore.setState((state) => ({

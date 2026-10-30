@@ -1,0 +1,46 @@
+name: Build and Publish Docker Image
+
+# Publishes ghcr.io/tbxark/playground (multi-arch, one manifest) so a deploy
+# host only needs docker-compose.yml — no source checkout, no build.
+#
+#   :latest    every push to master
+#   :v1.2.3    every pushed v* tag
+#
+# The build itself lives in TBXark/docker-action: checkout → QEMU → buildx →
+# metadata → push (linux/amd64 + linux/arm64, gha cache, provenance off). That
+# action does not forward build args, so the image always uses the Dockerfile's
+# default VITE_SERVER_MODE=optional (login UI + /api proxy). For an "off" image
+# change the Dockerfile default or extend the action.
+#
+# Optional mirror: set the BACKUP_REGISTRY / BACKUP_USERNAME / BACKUP_PASSWORD
+# repo secrets (e.g. docker.io) and the same manifest is pushed there too;
+# unset, the backup steps are skipped. backup_remove_username: false keeps the
+# owner namespace, which Docker Hub requires (docker.io/tbxark/playground).
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    permissions:
+      packages: write
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Build and push Docker image
+        uses: TBXark/docker-action@master
+        with:
+          # A v* tag also tags the image with the tag name; branch builds only
+          # move :latest. (The action always applies :latest as well.)
+          version: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          docker_registry: ghcr.io
+          docker_username: ${{ github.actor }}
+          docker_password: ${{ secrets.GITHUB_TOKEN }}
+          backup_registry: ${{ secrets.BACKUP_REGISTRY }}
+          backup_username: ${{ secrets.BACKUP_USERNAME }}
+          backup_password: ${{ secrets.BACKUP_PASSWORD }}
+          backup_remove_username: false

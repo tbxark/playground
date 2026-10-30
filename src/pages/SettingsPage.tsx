@@ -21,6 +21,7 @@ import {
   RotateCcwIcon,
   ScanEyeIcon,
   SearchIcon,
+  ServerIcon,
   Settings2Icon,
   SparklesIcon,
   Trash2Icon,
@@ -44,13 +45,20 @@ import {
   testImageServiceConnection,
 } from "../services/imageService";
 import { testLlmConnection } from "../services/llmAssistant";
+import { applyServerLlmOverlay, buildServerAwareRequest } from "../services/effectiveConfig";
+import { serverFeatureEnabled } from "@/features/serverMode";
+import { useServerStore } from "../stores/useServerStore";
+import { mergeServerDefaultModels } from "../services/serverModels";
 import { cn } from "@/utils/cn";
 
-const validSections = ["image", "assistant", "prompts", "network", "system"] as const;
+const validSections = ["image", "assistant", "server", "prompts", "network", "system"] as const;
 type SettingsSection = (typeof validSections)[number];
 const sectionFromHash = (hash: string): SettingsSection => {
   const value = hash.replace(/^#/, "") as SettingsSection;
-  return validSections.includes(value) ? value : "image";
+  if (!validSections.includes(value)) return "image";
+  // The server section only exists in the shared (optional-login) build.
+  if (value === "server" && !serverFeatureEnabled) return "image";
+  return value;
 };
 
 export function SettingsPage() {
@@ -126,6 +134,27 @@ export function SettingsPage() {
     message: string;
   } | null>(null);
 
+  // Shared server (optional-login build only)
+  const serverHealth = useServerStore((s) => s.health);
+  const serverHealthStatus = useServerStore((s) => s.healthStatus);
+  const serverToken = useServerStore((s) => s.token);
+  const serverTokenExp = useServerStore((s) => s.tokenExp);
+  const [serverUsername, setServerUsername] = useState("");
+  const [serverPassword, setServerPassword] = useState("");
+  const [serverLoginBusy, setServerLoginBusy] = useState(false);
+  const [serverLoginResult, setServerLoginResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
+
+  // Re-probe the backend whenever its section is opened, so the status row
+  // reflects the deployment as it is now, not as it was on app start.
+  useEffect(() => {
+    if (serverFeatureEnabled && activeNav === "server") {
+      void useServerStore.getState().checkHealth();
+    }
+  }, [activeNav]);
+
   const importFileRef = useRef<HTMLInputElement>(null);
 
   // Prompt library (user-built, no presets)
@@ -168,11 +197,16 @@ export function SettingsPage() {
     setIsTestingImage(true);
     setImageTestResult(null);
     try {
+      const request = buildServerAwareRequest(
+        "image",
+        { apiBaseUrl: imageConfig.apiBaseUrl, apiKey: imageConfig.apiKey },
+        { corsProxy, corsProxyMode }
+      );
       const res = await testImageServiceConnection(
-        imageConfig.apiBaseUrl,
-        imageConfig.apiKey,
-        corsProxy,
-        corsProxyMode
+        request.apiBaseUrl,
+        request.apiKey,
+        request.corsProxy,
+        request.corsProxyMode
       );
       if (!isCurrentRequest()) return;
       setImageTestResult(res);
@@ -205,11 +239,16 @@ export function SettingsPage() {
     setIsFetchingModels(true);
     setImageModelsMessage(null);
     try {
+      const request = buildServerAwareRequest(
+        "image",
+        { apiBaseUrl: requestConfig.apiBaseUrl, apiKey: requestConfig.apiKey },
+        { corsProxy: requestConfig.corsProxy, corsProxyMode: requestConfig.corsProxyMode }
+      );
       const onlineModels = await fetchOnlineModels(
-        requestConfig.apiBaseUrl,
-        requestConfig.apiKey,
-        requestConfig.corsProxy,
-        requestConfig.corsProxyMode
+        request.apiBaseUrl,
+        request.apiKey,
+        request.corsProxy,
+        request.corsProxyMode
       );
       if (!isCurrentRequest()) return;
       setFetchedModels(onlineModels);
@@ -242,7 +281,7 @@ export function SettingsPage() {
     setIsTestingLlm(true);
     setLlmTestResult(null);
     try {
-      const res = await testLlmConnection(requestConfig);
+      const res = await testLlmConnection(applyServerLlmOverlay(requestConfig));
       if (!isCurrentRequest()) return;
       setLlmTestResult(res);
       if (res.success) {
@@ -265,11 +304,12 @@ export function SettingsPage() {
     setIsFetchingLlmModels(true);
     setLlmFetchMessage(null);
     try {
+      const request = applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode });
       const res = await fetchOnlineLlmModels(
-        llmConfig.apiBaseUrl,
-        llmConfig.apiKey,
-        corsProxy,
-        corsProxyMode
+        request.apiBaseUrl,
+        request.apiKey,
+        request.corsProxy,
+        request.corsProxyMode
       );
       setLlmFetchedModels(res.textModels, res.visionModels);
       const successMsg = t("settings.fetchLlmModelsMessage", {
@@ -283,6 +323,36 @@ export function SettingsPage() {
     } finally {
       setIsFetchingLlmModels(false);
     }
+  };
+
+  // Shared server login/logout
+  const handleServerLogin = async () => {
+    if (!serverUsername.trim() || !serverPassword || serverLoginBusy) return;
+    setServerLoginBusy(true);
+    setServerLoginResult(null);
+    const result = await useServerStore.getState().login(serverUsername.trim(), serverPassword);
+    setServerLoginBusy(false);
+    if (result === "ok") {
+      setServerPassword("");
+      const merged = mergeServerDefaultModels();
+      void useServerStore.getState().checkHealth();
+      setServerLoginResult({
+        success: true,
+        message:
+          merged > 0
+            ? t("settings.server.loginOkWithModels", { count: merged })
+            : t("settings.server.loginOk"),
+      });
+    } else if (result === "invalid") {
+      setServerLoginResult({ success: false, message: t("settings.server.invalidCredentials") });
+    } else {
+      setServerLoginResult({ success: false, message: t("settings.server.unreachable") });
+    }
+  };
+
+  const handleServerLogout = () => {
+    useServerStore.getState().logout();
+    setServerLoginResult(null);
   };
 
   // Add custom manual model
@@ -612,6 +682,28 @@ export function SettingsPage() {
               </div>
             </div>
           </button>
+
+          {serverFeatureEnabled && (
+            <button
+              type="button"
+              aria-current={activeNav === "server" ? "page" : undefined}
+              onClick={() => selectSection("server")}
+              className={cn(
+                "w-auto md:w-full flex items-center gap-2 md:gap-3 px-3 md:px-4 py-2.5 rounded-2xl text-xs font-semibold transition-all text-left cursor-pointer shrink-0",
+                activeNav === "server"
+                  ? "bg-primary text-primary-foreground font-bold shadow-md shadow-primary/10"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              )}
+            >
+              <ServerIcon className={cn("size-4 shrink-0", activeNav === "server" ? "text-primary" : "")} />
+              <div className="flex-1 min-w-0">
+                <div className="leading-tight">{t("settings.nav.server")}</div>
+                <div className={cn("hidden md:block text-[11px] truncate mt-0.5", activeNav === "server" ? "text-primary-foreground/70 font-medium" : "text-muted-foreground")}>
+                  {t("settings.nav.serverDesc")}
+                </div>
+              </div>
+            </button>
+          )}
         </aside>
 
         {/* Right Content Area */}
@@ -1329,6 +1421,118 @@ export function SettingsPage() {
             </div>
           </div>
         )}
+
+          {/* 2b. Shared Server Section (optional-login builds only) */}
+          {activeNav === "server" && serverFeatureEnabled && (
+            <div className="space-y-6">
+              <div className="p-4 sm:p-6 rounded-3xl bg-card/80 border border-border space-y-5 shadow-xl">
+                <div>
+                  <h2 className="text-base font-bold text-foreground flex items-center gap-2">
+                    <span>{t("settings.server.title")}</span>
+                    <Badge variant="outline" className="text-[10px] bg-primary/10 border-primary/30 text-primary">
+                      {t("settings.server.badge")}
+                    </Badge>
+                  </h2>
+                  <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                    {t("settings.server.desc")}
+                  </p>
+                </div>
+
+                {/* Backend availability */}
+                {serverHealthStatus === "unavailable" && (
+                  <Alert variant="destructive">
+                    <AlertTitle>{t("settings.server.unreachableTitle")}</AlertTitle>
+                    <AlertDescription>{t("settings.server.unreachableDesc")}</AlertDescription>
+                  </Alert>
+                )}
+                {serverHealthStatus === "available" && serverHealth && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <Badge variant="outline" className={serverHealth.auth.enabled ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400" : ""}>
+                      {serverHealth.auth.enabled ? t("settings.server.authReady") : t("settings.server.authMissing")}
+                    </Badge>
+                    <Badge variant="outline" className={serverHealth.upstreams.llm ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400" : ""}>
+                      {serverHealth.upstreams.llm ? t("settings.server.llmReady") : t("settings.server.llmMissing")}
+                    </Badge>
+                    <Badge variant="outline" className={serverHealth.upstreams.image ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400" : ""}>
+                      {serverHealth.upstreams.image ? t("settings.server.imageReady") : t("settings.server.imageMissing")}
+                    </Badge>
+                  </div>
+                )}
+
+                {serverToken ? (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-muted/30 px-4 py-3">
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="text-sm font-semibold text-foreground flex items-center gap-2">
+                          <CheckCircle2Icon className="size-4 text-emerald-500" />
+                          {t("settings.server.loggedIn")}
+                        </div>
+                        {serverTokenExp && (
+                          <div className="text-xs text-muted-foreground">
+                            {t("settings.server.expiresAt", {
+                              time: new Date(serverTokenExp * 1000).toLocaleString(),
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      <Button variant="outline" size="sm" onClick={handleServerLogout}>
+                        {t("settings.server.logout")}
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      {t("settings.server.takenOverNote")}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label className="text-xs text-foreground font-semibold">
+                        {t("settings.server.usernameLabel")}
+                      </Label>
+                      <Input
+                        value={serverUsername}
+                        onChange={(e) => setServerUsername(e.target.value)}
+                        placeholder={t("settings.server.usernamePlaceholder")}
+                        autoComplete="username"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs text-foreground font-semibold">
+                        {t("settings.server.passwordLabel")}
+                      </Label>
+                      <Input
+                        type="password"
+                        value={serverPassword}
+                        onChange={(e) => setServerPassword(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void handleServerLogin();
+                        }}
+                        placeholder={t("settings.server.passwordPlaceholder")}
+                        autoComplete="current-password"
+                      />
+                    </div>
+                    {serverLoginResult && (
+                      <Alert variant={serverLoginResult.success ? "default" : "destructive"}>
+                        <AlertDescription>{serverLoginResult.message}</AlertDescription>
+                      </Alert>
+                    )}
+                    <div className="flex items-center gap-3">
+                      <Button
+                        onClick={handleServerLogin}
+                        disabled={serverLoginBusy || !serverUsername.trim() || !serverPassword}
+                      >
+                        {serverLoginBusy && <Loader2Icon className="size-4 animate-spin" />}
+                        {t("settings.server.login")}
+                      </Button>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        {t("settings.server.loginHint")}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* 3. Prompt Library Section */}
           {activeNav === "prompts" && (

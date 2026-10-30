@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Toaster } from "sonner";
+import { Toaster, toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import {
   ImagesIcon,
@@ -26,6 +26,8 @@ import { useQueueStore } from "../../stores/useQueueStore";
 import { useCommandPaletteStore } from "../../stores/useCommandPaletteStore";
 import { useResultIngestion } from "../../hooks/useResultIngestion";
 import { getDb } from "../../services/historyDb";
+import { serverFeatureEnabled } from "@/features/serverMode";
+import { useServerStore } from "../../stores/useServerStore";
 import { changeLocale } from "@/i18n";
 import { cn } from "@/utils/cn";
 
@@ -65,6 +67,20 @@ export function AppShell() {
   useEffect(() => {
     void hydrateAssets();
   }, [hydrateAssets]);
+
+  // Shared build: probe the backend once so login UI knows what it offers.
+  useEffect(() => {
+    if (!serverFeatureEnabled) return;
+    void useServerStore.getState().checkHealth();
+  }, []);
+
+  // A 401 from the proxy means the JWT expired; say so once, then re-arm.
+  const serverUnauthorized = useServerStore((state) => state.unauthorized);
+  useEffect(() => {
+    if (!serverUnauthorized) return;
+    toast.error(t("server.sessionExpired"));
+    useServerStore.getState().clearUnauthorized();
+  }, [serverUnauthorized, t]);
 
   // Poll gallery count from IndexedDB. Failures are visible in the nav instead
   // of being swallowed while every 4s retry fails silently.

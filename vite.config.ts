@@ -1,10 +1,46 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getRequestListener } from "@hono/node-server";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
+import { createApp } from "./functions/index";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Mounts the Hono API (functions/) into the Vite dev/preview server so
+ * `pnpm dev` runs the full stack on one origin — no CORS and no second
+ * process. Production uses functions/adapters/worker.ts (Cloudflare) and
+ * api/[[...route]].ts (Vercel) instead.
+ */
+function honoApiMiddleware(): Plugin {
+  const mount = (server: { config: { mode: string; envDir?: string }; middlewares: { use: (fn: unknown) => void } }) => {
+    // Empty prefix: load every .env var, not just VITE_* ones.
+    const env = loadEnv(server.config.mode, server.config.envDir || dirname, "");
+    const app = createApp(env);
+    const listener = getRequestListener(
+      (request: Request) => app.fetch(request),
+      { overrideGlobalObjects: false }
+    );
+    server.middlewares.use((req: { url?: string }, res: unknown, next: () => void) => {
+      if (req.url?.startsWith("/api/")) {
+        void listener(req as never, res as never);
+        return;
+      }
+      next();
+    });
+  };
+  return {
+    name: "hono-api-middleware",
+    configureServer(server) {
+      mount(server);
+    },
+    configurePreviewServer(server) {
+      mount(server);
+    },
+  };
+}
 
 /**
  * transformers.js bundles ONNX Runtime's WebGPU/asyncify runtime and Vite emits
@@ -63,5 +99,5 @@ export default defineConfig({
       },
     },
   },
-  plugins: [react(), tailwindcss(), dropUnusedOrtAsyncify()],
+  plugins: [react(), tailwindcss(), dropUnusedOrtAsyncify(), honoApiMiddleware()],
 });

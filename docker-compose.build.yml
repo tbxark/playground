@@ -1,0 +1,55 @@
+# Build variant: compiles the image locally from the Dockerfile in this
+# directory. Use it for the first deploy or when you changed the source.
+#
+#   cp .env.example .env.local        # AUTH_* / JWT_SECRET / LLM_* / IMAGE_*
+#   docker compose -f docker-compose.build.yml up -d --build
+#
+# The default docker-compose.yml pulls the prebuilt multi-arch image from GHCR
+# instead and needs no source checkout (see .github/workflows/docker.yaml).
+#
+# On Apple Silicon, build for an x86_64 VPS explicitly:
+#   DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.build.yml build
+
+name: aiimage-playground
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Baked into the client at build time: "optional" ships the login UI and
+        # the server-backed config switch, "off" is a pure-frontend image whose
+        # binary still serves the SPA. Build args are interpolated from the shell
+        # or the compose-level env file (`--env-file .env.local`), not from the
+        # service's env_file below.
+        VITE_SERVER_MODE: ${VITE_SERVER_MODE:-optional}
+    image: aiimage-playground:local
+    container_name: aiimage-playground
+    restart: unless-stopped
+
+    # Runtime secrets and upstreams. Optional so an "off" build starts without
+    # it; with no AUTH_* / LLM_* set the SPA still loads but /api stays unconfigured.
+    env_file:
+      - path: .env.local
+        required: false
+
+    # Container-side listen address; must match the right-hand side of `ports`.
+    # Everything else (TRUST_PROXY_HEADERS, LOG_LEVEL, JWT_TTL_HOURS, ...) comes
+    # from .env.local — `environment` entries would override it, so leave them out.
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+
+    ports:
+      # Change the host port with PLAYGROUND_PORT=9000 in the shell or .env.
+      - "${PLAYGROUND_PORT:-8080}:8080"
+
+    # The image already declares HEALTHCHECK (`/aiimage-playground -healthcheck`
+    # polls GET /api/health), so `docker compose ps` shows healthy/unhealthy.
+
+    # Defense in depth: the image is distroless and already runs as nonroot.
+    security_opt:
+      - no-new-privileges:true
+    # The binary writes nothing to disk, so this is safe to enable.
+    # read_only: true

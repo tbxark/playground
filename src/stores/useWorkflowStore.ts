@@ -6,6 +6,7 @@ import { extractErrorMessage } from "../utils/error";
 import { i18n } from "@/i18n";
 import { useConfigStore } from "./useConfigStore";
 import { dispatchGenerate } from "../services/providers/dispatcher";
+import { applyServerImageOverlay, applyServerLlmOverlay } from "../services/effectiveConfig";
 import { saveToHistory } from "../services/historyDb";
 import {
   getCanvasAsset,
@@ -884,11 +885,11 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
         if (inFlightExecution.has(nodeId)) return;
 
         const config = useConfigStore.getState();
-        const llmConfig = {
+        const llmConfig = applyServerLlmOverlay({
           ...config.llmConfig,
           corsProxy: config.corsProxy,
           corsProxyMode: config.corsProxyMode,
-        };
+        });
 
         const mode = node.data.assistantMode || "enhance";
 
@@ -1169,7 +1170,11 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
         });
 
         try {
-          const resultUrl = await dispatchGenerate(provider, {
+          const { provider: effectiveProvider, proxy: effectiveProxy } = applyServerImageOverlay(
+            provider,
+            { corsProxy: config.corsProxy, corsProxyMode: config.corsProxyMode }
+          );
+          const resultUrl = await dispatchGenerate(effectiveProvider, {
             providerId,
             model,
             prompt,
@@ -1180,8 +1185,8 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
             cfgScale: genNode.data.cfgScale,
             steps: genNode.data.steps,
             seed: genNode.data.seed,
-            corsProxy: config.corsProxy,
-            corsProxyMode: config.corsProxyMode,
+            corsProxy: effectiveProxy.corsProxy,
+            corsProxyMode: effectiveProxy.corsProxyMode,
             signal: controller.signal,
             onProgress: (p) => {
               get().updateNodeData(nodeId, {

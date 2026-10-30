@@ -44,6 +44,7 @@ import { useLightboxStore } from "../../stores/useLightboxStore";
 import { useGenerateAction } from "../../hooks/useGenerateAction";
 import { useCardEdit } from "../../hooks/useCardEdit";
 import { imageToPrompt, polishPrompt } from "../../services/llmAssistant";
+import { applyServerLlmOverlay } from "../../services/effectiveConfig";
 import { resolveCardDataUrl } from "../../utils/cardSource";
 import { ReferenceHelpDialog } from "./ReferenceHelpDialog";
 import { cn } from "@/utils/cn";
@@ -240,7 +241,7 @@ export function FreeCanvasCommandBar() {
     try {
       const response = await polishPrompt(
         prompt,
-        { ...llmConfig, corsProxy, corsProxyMode },
+        applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode }),
         "enhance",
         controller.signal
       );
@@ -265,7 +266,7 @@ export function FreeCanvasCommandBar() {
     try {
       const response = await polishPrompt(
         prompt,
-        { ...llmConfig, corsProxy, corsProxyMode },
+        applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode }),
         "translate",
         controller.signal
       );
@@ -298,7 +299,7 @@ export function FreeCanvasCommandBar() {
       }
       const response = await imageToPrompt(
         targetUrl,
-        { ...llmConfig, corsProxy, corsProxyMode },
+        applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode }),
         controller.signal
       );
       setPrompt(response);

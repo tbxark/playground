@@ -7,6 +7,7 @@ import {
   normalizeCorsProxy,
   normalizeCorsProxyMode,
 } from "@/utils/proxy";
+import { useServerStore } from "@/stores/useServerStore";
 import { GenerateParams } from "./types";
 
 export type ModelOption = {
@@ -224,6 +225,20 @@ export function createOpenAiClient(config: {
   if (proxying && mode === "auto") {
     clientOptions.fetch = (input, init) =>
       corsAwareFetch(input, init, { corsProxy: proxy, corsProxyMode: "auto" });
+  }
+
+  // Server-proxy mode: a 401 from our own /api/proxy/* means the login JWT
+  // expired (or was revoked). Flag it once so the shell can prompt a fresh
+  // login; the SDK error itself still surfaces through the caller.
+  if (typeof window !== "undefined" && cleanBase.startsWith(`${window.location.origin}/api/proxy/`)) {
+    const innerFetch = clientOptions.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+    clientOptions.fetch = async (input, init) => {
+      const response = await innerFetch(input, init);
+      if (response.status === 401) {
+        useServerStore.getState().markUnauthorized();
+      }
+      return response;
+    };
   }
 
   return new OpenAI(clientOptions);

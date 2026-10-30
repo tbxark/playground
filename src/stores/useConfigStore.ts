@@ -5,6 +5,8 @@ import { LlmConfig } from "../services/llmAssistant";
 import { i18n } from "@/i18n";
 import { CorsProxyMode, normalizeCorsProxyMode } from "@/utils/proxy";
 import { ImageApiConfig, isImageGenCapabilityTag, ModelOption } from "../services/imageService";
+import { serverFeatureEnabled } from "@/features/serverMode";
+import { useServerStore } from "./useServerStore";
 
 type ConfigState = {
   // Unified OpenAI-compatible Image Generation Service
@@ -169,7 +171,8 @@ function normalizeImportedLlmConfig(
 /**
  * The setup guide is for a browser that has never stored a provider key. Having
  * only one of the two keys (e.g. an image key, no assistant) counts as set up;
- * the guide is about first contact, not completeness.
+ * the guide is about first contact, not completeness. An active server session
+ * also counts: the shared build works without any local key.
  */
 export function isSetupRequired(
   state: Pick<ConfigState, "imageConfig" | "llmConfig" | "onboardingDismissed">
@@ -177,7 +180,8 @@ export function isSetupRequired(
   return (
     !state.onboardingDismissed &&
     !state.imageConfig.apiKey.trim() &&
-    !state.llmConfig.apiKey.trim()
+    !state.llmConfig.apiKey.trim() &&
+    !(serverFeatureEnabled && useServerStore.getState().token)
   );
 }
 
