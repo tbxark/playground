@@ -77,7 +77,9 @@ func main() {
 		"auth_enabled", cfg.authConfigured(),
 		"llm_upstream", upstreamLabel(cfg.llmUpstream),
 		"image_upstream", upstreamLabel(cfg.imageUpstream),
-		"default_models", len(cfg.defaultModels),
+		"managed_image_models", len(cfg.managedImageModels),
+		"managed_llm_model", cfg.managedLlmModel,
+		"managed_vision_model", cfg.managedVisionModel,
 	)
 
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

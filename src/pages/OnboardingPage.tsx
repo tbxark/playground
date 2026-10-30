@@ -38,8 +38,8 @@ import {
   modelDisplayName,
   testImageServiceConnection,
 } from "../services/imageService";
-import { applyServerLlmOverlay, buildServerAwareRequest } from "../services/effectiveConfig";
-import { mergeServerDefaultModels } from "../services/serverModels";
+import { useRuntimeImageState } from "../hooks/useRuntimeImageState";
+import { useManagedConfigStore } from "../stores/useManagedConfigStore";
 import { serverFeatureEnabled } from "@/features/serverMode";
 import { useServerStore } from "../stores/useServerStore";
 import { changeLocale } from "@/i18n";
@@ -118,16 +118,21 @@ export function OnboardingPage() {
 
   const currentLocale = i18n.language.startsWith("zh") ? "zh" : "en";
   const serverToken = useServerStore((s) => s.token);
+  const managedConfig = useManagedConfigStore((s) => s.config);
+  const managedStatus = useManagedConfigStore((s) => s.status);
+  const managedError = useManagedConfigStore((s) => s.error);
+  const loadManagedConfig = useManagedConfigStore((s) => s.load);
+  const resetManagedConfig = useManagedConfigStore((s) => s.reset);
+  const serverManaged = serverFeatureEnabled && serverToken !== null;
   const [serverUsername, setServerUsername] = useState("");
   const [serverPassword, setServerPassword] = useState("");
   const [serverLoginBusy, setServerLoginBusy] = useState(false);
   const [serverLoginResult, setServerLoginResult] = useState<Result | null>(null);
   const hasImageKey = imageConfig.apiKey.trim().length > 0 || serverToken !== null;
-  const enabledModels = imageConfig.models.filter((model) =>
-    imageConfig.enabledModelIds.includes(model.id)
-  );
+  const runtime = useRuntimeImageState();
+  const enabledModels = runtime.models;
   const defaultModel =
-    enabledModels.find((model) => model.id === imageConfig.selectedModel) ??
+    enabledModels.find((model) => model.id === runtime.selectedModel) ??
     enabledModels[0];
   const canStart = hasImageKey && enabledModels.length > 0;
 
@@ -135,11 +140,60 @@ export function OnboardingPage() {
     document.title = t("onboarding.brand");
   }, [t]);
 
-  const steps = [
-    { key: "service", done: hasImageKey },
-    { key: "models", done: enabledModels.length > 0 },
-    { key: "start", done: canStart },
-  ];
+  // Onboarding is outside AppShell, so it loads the managed config itself when
+  // a persisted session opens this page directly.
+  useEffect(() => {
+    if (!serverFeatureEnabled) return;
+    if (useServerStore.getState().token) {
+      void loadManagedConfig();
+    } else {
+      resetManagedConfig();
+    }
+    // Mount-only: login from the card above loads the config itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const steps = serverManaged
+    ? [
+        {
+          key: "service",
+          done: true,
+          title: t("onboarding.managed.stepService"),
+          desc: t("onboarding.managed.stepServiceDesc"),
+        },
+        {
+          key: "models",
+          done: enabledModels.length > 0,
+          title: t("onboarding.managed.stepModels"),
+          desc: t("onboarding.managed.stepModelsDesc"),
+        },
+        {
+          key: "start",
+          done: canStart,
+          title: t("onboarding.steps.start.title"),
+          desc: t("onboarding.steps.start.desc"),
+        },
+      ]
+    : [
+        {
+          key: "service",
+          done: hasImageKey,
+          title: t("onboarding.steps.service.title"),
+          desc: t("onboarding.steps.service.desc"),
+        },
+        {
+          key: "models",
+          done: enabledModels.length > 0,
+          title: t("onboarding.steps.models.title"),
+          desc: t("onboarding.steps.models.desc"),
+        },
+        {
+          key: "start",
+          done: canStart,
+          title: t("onboarding.steps.start.title"),
+          desc: t("onboarding.steps.start.desc"),
+        },
+      ];
 
   // Every request is checked against the config it was sent with, so a result
   // from an old endpoint/key never lands on the new one (same rule as Settings).
@@ -169,16 +223,11 @@ export function OnboardingPage() {
     setIsTestingImage(true);
     setImageTestResult(null);
     try {
-      const request = buildServerAwareRequest(
-        "image",
-        { apiBaseUrl: snapshot.apiBaseUrl, apiKey: snapshot.apiKey },
-        { corsProxy: snapshot.corsProxy, corsProxyMode: snapshot.corsProxyMode }
-      );
       const result = await testImageServiceConnection(
-        request.apiBaseUrl,
-        request.apiKey,
-        request.corsProxy,
-        request.corsProxyMode
+        snapshot.apiBaseUrl,
+        snapshot.apiKey,
+        snapshot.corsProxy,
+        snapshot.corsProxyMode
       );
       if (!isCurrentImageRequest(snapshot)) return;
       setImageTestResult(result);
@@ -198,16 +247,11 @@ export function OnboardingPage() {
     setIsFetchingModels(true);
     setModelsResult(null);
     try {
-      const request = buildServerAwareRequest(
-        "image",
-        { apiBaseUrl: snapshot.apiBaseUrl, apiKey: snapshot.apiKey },
-        { corsProxy: snapshot.corsProxy, corsProxyMode: snapshot.corsProxyMode }
-      );
       const models = await fetchOnlineModels(
-        request.apiBaseUrl,
-        request.apiKey,
-        request.corsProxy,
-        request.corsProxyMode
+        snapshot.apiBaseUrl,
+        snapshot.apiKey,
+        snapshot.corsProxy,
+        snapshot.corsProxyMode
       );
       if (!isCurrentImageRequest(snapshot)) return;
       setFetchedModels(models);
@@ -275,12 +319,11 @@ export function OnboardingPage() {
     setIsFetchingLlm(true);
     setLlmFetchResult(null);
     try {
-      const request = applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode });
       const result = await fetchOnlineLlmModels(
-        request.apiBaseUrl,
-        request.apiKey,
-        request.corsProxy,
-        request.corsProxyMode
+        llmConfig.apiBaseUrl,
+        llmConfig.apiKey,
+        corsProxy,
+        corsProxyMode
       );
       setLlmFetchedModels(result.textModels, result.visionModels);
       // Use fresh state: the user may have typed a model ID while the request
@@ -316,11 +359,11 @@ export function OnboardingPage() {
     setServerLoginBusy(true);
     setServerLoginResult(null);
     const result = await useServerStore.getState().login(serverUsername.trim(), serverPassword);
-    setServerLoginBusy(false);
     if (result === "ok") {
       setServerPassword("");
-      const merged = mergeServerDefaultModels();
-      void useServerStore.getState().checkHealth();
+      await loadManagedConfig();
+      const merged =
+        useManagedConfigStore.getState().config?.image.models.length ?? 0;
       setServerLoginResult({
         success: true,
         message:
@@ -333,6 +376,7 @@ export function OnboardingPage() {
     } else {
       setServerLoginResult({ success: false, message: t("onboarding.server.unreachable") });
     }
+    setServerLoginBusy(false);
   };
 
   const applyImport = (jsonText: string) => {
@@ -376,14 +420,13 @@ export function OnboardingPage() {
   };
 
   const finish = (target: string) => {
-    const state = useConfigStore.getState();
-    if (!state.imageConfig.enabledModelIds.includes(state.imageConfig.selectedModel)) {
-      const first = state.imageConfig.models.find((model) =>
-        state.imageConfig.enabledModelIds.includes(model.id)
-      );
-      if (first) state.setSelectedModel(first.id);
+    if (
+      !enabledModels.some((model) => model.id === runtime.selectedModel) &&
+      enabledModels[0]
+    ) {
+      runtime.setSelectedModel(enabledModels[0].id);
     }
-    state.dismissOnboarding();
+    useConfigStore.getState().dismissOnboarding();
     navigate(target, { replace: true });
   };
 
@@ -455,7 +498,7 @@ export function OnboardingPage() {
                 {t("onboarding.brand")}
               </p>
               <p className="truncate text-[11px] text-muted-foreground">
-                {t("onboarding.tagline")}
+                {t(serverManaged ? "onboarding.managed.tagline" : "onboarding.tagline")}
               </p>
             </div>
           </div>
@@ -496,10 +539,10 @@ export function OnboardingPage() {
           <aside className="flex flex-col gap-4 lg:sticky lg:top-6 lg:self-start">
             <div className="rounded-3xl border border-border bg-card/80 p-5 shadow-xl">
               <h1 className="text-lg font-extrabold leading-snug tracking-tight">
-                {t("onboarding.title")}
+                {t(serverManaged ? "onboarding.managed.title" : "onboarding.title")}
               </h1>
               <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                {t("onboarding.subtitle")}
+                {t(serverManaged ? "onboarding.managed.subtitle" : "onboarding.subtitle")}
               </p>
 
               <ol className="mt-5 space-y-3">
@@ -533,10 +576,10 @@ export function OnboardingPage() {
                               : "text-muted-foreground"
                           )}
                         >
-                          {t(`onboarding.steps.${step.key}.title`)}
+                          {step.title}
                         </p>
                         <p className="text-[11px] leading-relaxed text-muted-foreground">
-                          {t(`onboarding.steps.${step.key}.desc`)}
+                          {step.desc}
                         </p>
                       </div>
                     </li>
@@ -545,29 +588,33 @@ export function OnboardingPage() {
               </ol>
             </div>
 
-            <div className="rounded-3xl border border-dashed border-border bg-muted/30 p-4">
-              <p className="text-xs font-bold">{t("onboarding.import.title")}</p>
-              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                {t("onboarding.import.desc")}
-              </p>
-              <label className="mt-3 flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-border bg-background text-xs font-semibold text-foreground transition-colors hover:bg-muted">
-                <UploadIcon className="size-3.5" />
-                <span>{t("onboarding.import.button")}</span>
-                <input
-                  type="file"
-                  accept=".json,application/json"
-                  className="hidden"
-                  onChange={handleImportFile}
-                />
-              </label>
-              <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
-                {t("onboarding.import.overwrite")}
-              </p>
-            </div>
+            {!serverManaged && (
+              <div className="rounded-3xl border border-dashed border-border bg-muted/30 p-4">
+                <p className="text-xs font-bold">{t("onboarding.import.title")}</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  {t("onboarding.import.desc")}
+                </p>
+                <label className="mt-3 flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-border bg-background text-xs font-semibold text-foreground transition-colors hover:bg-muted">
+                  <UploadIcon className="size-3.5" />
+                  <span>{t("onboarding.import.button")}</span>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    className="hidden"
+                    onChange={handleImportFile}
+                  />
+                </label>
+                <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                  {t("onboarding.import.overwrite")}
+                </p>
+              </div>
+            )}
 
             <p className="flex gap-1.5 px-1 text-[10px] leading-relaxed text-muted-foreground">
               <ShieldCheckIcon className="mt-0.5 size-3 shrink-0" />
-              <span>{t("onboarding.privacy")}</span>
+              <span>
+                {t(serverManaged ? "onboarding.managed.privacy" : "onboarding.privacy")}
+              </span>
             </p>
           </aside>
 
@@ -590,7 +637,11 @@ export function OnboardingPage() {
                       </Badge>
                     </h2>
                     <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                      {t("onboarding.server.desc")}
+                      {t(
+                        serverToken
+                          ? "onboarding.server.loggedInDesc"
+                          : "onboarding.server.desc"
+                      )}
                     </p>
                   </div>
                 </div>
@@ -609,7 +660,11 @@ export function OnboardingPage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => useServerStore.getState().logout()}
+                          onClick={() => {
+                            useServerStore.getState().logout();
+                            resetManagedConfig();
+                            setServerLoginResult(null);
+                          }}
                         >
                           {t("onboarding.server.logout")}
                         </Button>
@@ -675,7 +730,98 @@ export function OnboardingPage() {
               </div>
             )}
 
-            {/* Image generation service */}
+            {serverManaged && (
+              <div className="rounded-3xl border border-emerald-500/30 bg-card/80 p-4 shadow-xl sm:p-6">
+                <div className="flex items-start gap-3">
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/15 text-emerald-500">
+                    <CheckCircle2Icon className="size-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="flex flex-wrap items-center gap-2 text-sm font-bold text-foreground">
+                      {t("onboarding.managed.cardTitle")}
+                      <Badge
+                        variant="outline"
+                        className="border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-600 dark:text-emerald-400"
+                      >
+                        {t("onboarding.managed.ready")}
+                      </Badge>
+                    </h2>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      {t("onboarding.managed.desc")}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="font-mono text-[10px]">
+                    {t("onboarding.managed.imageReady")} ·{" "}
+                    {t("onboarding.managed.modelsCount", { count: enabledModels.length })}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "font-mono text-[10px]",
+                      managedConfig?.assistant.textModel ||
+                        managedConfig?.assistant.visionModel
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                        : ""
+                    )}
+                  >
+                    {t("onboarding.managed.assistantReady")} ·{" "}
+                    {managedConfig?.assistant.textModel ||
+                    managedConfig?.assistant.visionModel
+                      ? t("onboarding.managed.ready")
+                      : t("onboarding.managed.missing")}
+                  </Badge>
+                </div>
+
+                {enabledModels.length > 0 ? (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-[11px] font-semibold text-muted-foreground">
+                      {t("onboarding.managed.modelsTitle")}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {enabledModels.map((model) => (
+                        <span
+                          key={model.id}
+                          className="max-w-full truncate rounded-lg border border-border bg-background px-2.5 py-1 font-mono text-[11px] text-foreground"
+                          title={model.id}
+                        >
+                          {modelDisplayName(model)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <Alert variant="destructive" className="mt-4 py-2.5 text-xs">
+                    <AlertTitle className="flex items-center gap-1.5 text-xs font-bold">
+                      <AlertTriangleIcon className="size-4" />
+                      <span>{t("onboarding.managed.noModelsTitle")}</span>
+                    </AlertTitle>
+                    <AlertDescription className="mt-1 break-words text-xs">
+                      {managedStatus === "error"
+                        ? t("onboarding.managed.configError", {
+                            code: managedError || "config_unreachable",
+                          })
+                        : t("onboarding.managed.noModelsDesc")}
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                <p className="mt-4 text-[11px] leading-relaxed text-muted-foreground">
+                  {managedConfig?.assistant.textModel ||
+                  managedConfig?.assistant.visionModel
+                    ? t("onboarding.managed.assistantFixed", {
+                        text: managedConfig.assistant.textModel ?? "—",
+                        vision: managedConfig.assistant.visionModel ?? "—",
+                      })
+                    : t("onboarding.managed.assistantMissing")}
+                </p>
+              </div>
+            )}
+
+            {/* Image generation service (local setup only) */}
+            {!serverManaged && (
             <div className="rounded-3xl border border-border bg-card/80 p-4 shadow-xl sm:p-6">
               <div className="flex items-start gap-3">
                 <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-primary/30 bg-primary/15 text-primary">
@@ -830,8 +976,10 @@ export function OnboardingPage() {
                 </details>
               </div>
             </div>
+            )}
 
-            {/* Model selection */}
+            {/* Model selection (local setup only) */}
+            {!serverManaged && (
             <div className="rounded-3xl border border-border bg-card/80 p-4 shadow-xl sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -968,8 +1116,10 @@ export function OnboardingPage() {
                 </p>
               )}
             </div>
+            )}
 
-            {/* Optional prompt assistant */}
+            {/* Optional prompt assistant (local setup only) */}
+            {!serverManaged && (
             <div className="rounded-3xl border border-border bg-card/80 shadow-xl">
               <button
                 type="button"
@@ -1111,6 +1261,7 @@ export function OnboardingPage() {
                 </div>
               )}
             </div>
+            )}
           </section>
         </main>
       </div>
@@ -1135,15 +1286,21 @@ export function OnboardingPage() {
                 {canStart
                   ? t("onboarding.footer.ready")
                   : hasImageKey
-                    ? t("onboarding.footer.needModel")
+                    ? t(
+                        serverManaged
+                          ? "onboarding.footer.needServerModels"
+                          : "onboarding.footer.needModel"
+                      )
                     : t("onboarding.footer.needKey")}
               </span>
             </p>
             <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
               {t("onboarding.footer.summary", {
                 model: defaultModel ? modelDisplayName(defaultModel) : "—",
-                assistant:
-                  llmConfig.apiKey.trim() && llmConfig.model
+                assistant: serverManaged
+                  ? managedConfig?.assistant.textModel ||
+                    t("onboarding.footer.assistantOff")
+                  : llmConfig.apiKey.trim() && llmConfig.model
                     ? llmConfig.model
                     : t("onboarding.footer.assistantOff"),
               })}

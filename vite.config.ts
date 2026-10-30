@@ -9,10 +9,11 @@ import { createApp } from "./functions/index";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Mounts the Hono API (functions/) into the Vite dev/preview server so
- * `pnpm dev` runs the full stack on one origin — no CORS and no second
- * process. Production uses functions/adapters/worker.ts (Cloudflare) and
- * api/[[...route]].ts (Vercel) instead.
+ * Mounts the Hono API (functions/) into the Vite dev/preview server so a plain
+ * `vite` / `vite preview` runs the full stack on one origin — no CORS and no
+ * second process. `pnpm dev` uses `--mode go` instead and proxies to the Go
+ * server (see below). Production uses functions/adapters/worker.ts (Cloudflare)
+ * and api/[[...route]].ts (Vercel).
  */
 function honoApiMiddleware(): Plugin {
   const mount = (server: { config: { mode: string; envDir?: string }; middlewares: { use: (fn: unknown) => void } }) => {
@@ -66,38 +67,63 @@ function dropUnusedOrtAsyncify(): Plugin {
   };
 }
 
-export default defineConfig({
-  resolve: {
-    alias: {
-      "@": path.resolve(dirname, "src"),
+export default defineConfig(({ mode }) => {
+  // `vite --mode go` is the split dev loop (`pnpm dev`): Vite serves the app and
+  // proxies /api to the Go server instead of mounting the Hono API in-process.
+  // Plain `vite` / `vite preview` keep the in-process Hono middleware.
+  const goBackend = mode === "go";
+  const apiTarget = process.env.DEV_API_TARGET || "http://127.0.0.1:8080";
+
+  return {
+    resolve: {
+      alias: {
+        "@": path.resolve(dirname, "src"),
+      },
     },
-  },
-  optimizeDeps: {
-    // The worker imports transformers.js lazily; pre-bundling it avoids Vite's
-    // "optimized dependencies changed — reloading" page reload on first use.
-    include: ["@huggingface/transformers"],
-  },
-  server: {
-    host: "127.0.0.1",
-    port: 5180,
-    fs: {
-      deny: [".env", ".env.*", "*.{crt,pem}", "config.json"],
+    optimizeDeps: {
+      // The worker imports transformers.js lazily; pre-bundling it avoids Vite's
+      // "optimized dependencies changed — reloading" page reload on first use.
+      include: ["@huggingface/transformers"],
     },
-  },
-  preview: {
-    host: "127.0.0.1",
-    port: 5180,
-  },
-  build: {
-    chunkSizeWarningLimit: 800,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          vendor: ["react", "react-dom", "zustand", "idb"],
-          jszip: ["jszip"],
+    server: {
+      host: "127.0.0.1",
+      port: 5180,
+      fs: {
+        deny: [".env", ".env.*", "*.{crt,pem}", "config.json"],
+      },
+      proxy: goBackend
+        ? {
+            "/api": {
+              target: apiTarget,
+              // Keep the browser's Host header: the Go server's same-origin
+              // guard compares the Origin header with the Host it received.
+              // Rewriting Host to :8080 would turn every managed request into
+              // cross_origin_forbidden.
+              changeOrigin: false,
+            },
+          }
+        : undefined,
+    },
+    preview: {
+      host: "127.0.0.1",
+      port: 5180,
+    },
+    build: {
+      chunkSizeWarningLimit: 800,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            vendor: ["react", "react-dom", "zustand", "idb"],
+            jszip: ["jszip"],
+          },
         },
       },
     },
-  },
-  plugins: [react(), tailwindcss(), dropUnusedOrtAsyncify(), honoApiMiddleware()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      dropUnusedOrtAsyncify(),
+      ...(goBackend ? [] : [honoApiMiddleware()]),
+    ],
+  };
 });

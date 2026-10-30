@@ -169,10 +169,14 @@ skills-lock.json
 .vercel
 .env*
 
-# Keep the env template committable despite .env*
+# Keep the env template and the `vite --mode go` defaults committable despite .env*
 !.env.example
+!.env.go
 
-# Go server build artifacts (SPA is embedded at build time).
-server/aiimage-playground
+# Go server build artifacts (SPA is embedded at build time). web/static is only
+# the staging directory for go:embed; the server/aiimage-playground line keeps
+# binaries from the pre-build/dist layout out of commits.
+/build/
+/server/aiimage-playground
 server/web/static/*
 !server/web/static/.gitkeep

@@ -13,9 +13,9 @@ import { useTranslation } from "react-i18next";
 import { modelDisplayName } from "../../../services/imageService";
 import { Button } from "../../ui/button";
 import { Progress } from "../../ui/progress";
-import { useConfigStore } from "../../../stores/useConfigStore";
 import { useFreeCanvasStore } from "../../../stores/useFreeCanvasStore";
 import { useLightboxStore } from "../../../stores/useLightboxStore";
+import { useRuntimeImageState } from "../../../hooks/useRuntimeImageState";
 import { cn } from "@/utils/cn";
 
 const PORTS: WorkflowPortDef[] = [
@@ -34,13 +34,10 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
   // same node while the batch is still on an earlier node pays for it twice.
   const batchRunning = useWorkflowStore((state) => state.batchRunning);
   const stopNode = useWorkflowStore((state) => state.stopNode);
-  const { imageConfig, selectedModel } = useConfigStore();
   const addExternalImage = useFreeCanvasStore((state) => state.addExternalImage);
   const openLightbox = useLightboxStore((state) => state.open);
 
-  const activeModels = imageConfig.models.filter((m) =>
-    imageConfig.enabledModelIds.includes(m.id)
-  );
+  const { models: activeModels, selectedModel, isModelAllowed } = useRuntimeImageState();
 
   const model = node.data.model || selectedModel || "";
   const size = node.data.size || "1:1";
@@ -49,7 +46,7 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
   const isRunning = node.data.status === "running";
   const isDone = node.data.status === "done";
   const isError = node.data.status === "error";
-  const modelAvailable = activeModels.some((item) => item.id === model);
+  const modelAvailable = isModelAllowed(model);
 
   // Check incoming connections (supports multiple prompts and multiple images)
   const promptEdges = edges.filter(

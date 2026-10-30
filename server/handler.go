@@ -44,8 +44,7 @@ func newHandler(cfg config, opts handlerOptions) http.Handler {
 		}
 		login.ServeHTTP(w, r)
 	})
-	mux.Handle(llmProxyPrefix+"/", cfg.requireAuth(newProxyHandler(cfg, kindLLM, opts.httpClient)))
-	mux.Handle(imageProxyPrefix+"/", cfg.requireAuth(newProxyHandler(cfg, kindImage, opts.httpClient)))
+	registerManagedRoutes(mux, cfg, opts.httpClient)
 	apiNotFound := func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found")
 	}
@@ -128,8 +127,6 @@ type healthResponse struct {
 		LLM   bool `json:"llm"`
 		Image bool `json:"image"`
 	} `json:"upstreams"`
-	// Model ids the operator pre-approves; merged client-side after login.
-	DefaultModels []string `json:"defaultModels,omitempty"`
 }
 
 func healthHandler(cfg config) http.Handler {
@@ -138,7 +135,6 @@ func healthHandler(cfg config) http.Handler {
 		body.Auth.Enabled = cfg.authConfigured()
 		body.Upstreams.LLM = cfg.upstreamFor(kindLLM) != nil
 		body.Upstreams.Image = cfg.upstreamFor(kindImage) != nil
-		body.DefaultModels = cfg.defaultModels
 		writeJSON(w, http.StatusOK, body)
 	})
 }

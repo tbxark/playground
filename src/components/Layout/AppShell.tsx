@@ -28,6 +28,7 @@ import { useResultIngestion } from "../../hooks/useResultIngestion";
 import { getDb } from "../../services/historyDb";
 import { serverFeatureEnabled } from "@/features/serverMode";
 import { useServerStore } from "../../stores/useServerStore";
+import { useManagedConfigStore } from "../../stores/useManagedConfigStore";
 import { changeLocale } from "@/i18n";
 import { cn } from "@/utils/cn";
 
@@ -73,6 +74,17 @@ export function AppShell() {
     if (!serverFeatureEnabled) return;
     void useServerStore.getState().checkHealth();
   }, []);
+
+  // Managed sessions load their runtime config from the server; local sessions
+  // clear it. The local config store is never touched by this transition.
+  const serverToken = useServerStore((state) => state.token);
+  const loadManagedConfig = useManagedConfigStore((state) => state.load);
+  const resetManagedConfig = useManagedConfigStore((state) => state.reset);
+  useEffect(() => {
+    if (!serverFeatureEnabled) return;
+    if (serverToken) void loadManagedConfig();
+    else resetManagedConfig();
+  }, [serverToken, loadManagedConfig, resetManagedConfig]);
 
   // A 401 from the proxy means the JWT expired; say so once, then re-arm.
   const serverUnauthorized = useServerStore((state) => state.unauthorized);

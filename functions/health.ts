@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { isAuthConfigured } from "./auth";
-import { parseDefaultModels, resolveUpstream, type ServerEnv } from "./env";
+import { resolveUpstream, type ServerEnv } from "./env";
 import type { ServerHealthResponse } from "../shared/contracts";
 
 export function registerHealthRoutes(app: Hono, env: ServerEnv): void {
@@ -12,7 +12,6 @@ export function registerHealthRoutes(app: Hono, env: ServerEnv): void {
         llm: resolveUpstream(env, "llm") !== null,
         image: resolveUpstream(env, "image") !== null,
       },
-      ...(parseDefaultModels(env) ? { defaultModels: parseDefaultModels(env) } : {}),
     };
     return c.json(body);
   });

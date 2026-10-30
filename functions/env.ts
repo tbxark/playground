@@ -19,8 +19,12 @@ export type ServerEnv = {
   IMAGE_BASE_URL?: string;
   IMAGE_API_KEY?: string;
 
-  /** Optional comma-separated model ids merged client-side after login. */
-  SERVER_DEFAULT_MODELS?: string;
+  /** Comma-separated image model ids managed users are restricted to. */
+  MANAGED_IMAGE_MODELS?: string;
+  /** Fixed assistant text model for managed users. */
+  MANAGED_LLM_MODEL?: string;
+  /** Fixed assistant vision model for managed users. */
+  MANAGED_VISION_MODEL?: string;
 };
 
 /** Resolve the effective upstream for one proxy kind, with IMAGE falling back to LLM. */
@@ -38,12 +42,20 @@ export function resolveUpstream(
   return { baseUrl, apiKey };
 }
 
-export function parseDefaultModels(env: ServerEnv): string[] | undefined {
-  const raw = env.SERVER_DEFAULT_MODELS?.trim();
-  if (!raw) return undefined;
-  const ids = raw
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
-  return ids.length > 0 ? ids : undefined;
+export function parseManagedImageModels(env: ServerEnv): string[] {
+  const raw = env.MANAGED_IMAGE_MODELS?.trim();
+  if (!raw) return [];
+  return Array.from(
+    new Set(
+      raw
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+export function parseOptionalModel(value: string | undefined): string | undefined {
+  const id = value?.trim();
+  return id ? id : undefined;
 }

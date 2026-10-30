@@ -10,6 +10,7 @@ import {
 import { toast } from "sonner";
 import { useWorkflowStore } from "../../stores/useWorkflowStore";
 import { useConfigStore } from "../../stores/useConfigStore";
+import { useRuntimeImageState } from "../../hooks/useRuntimeImageState";
 import {
   generateWorkflowCode,
   type WorkflowCodeWarning,
@@ -72,6 +73,7 @@ export function WorkflowCodeDialog({
   const edges = useWorkflowStore((state) => state.edges);
   const imageConfig = useConfigStore((state) => state.imageConfig);
   const llmConfig = useConfigStore((state) => state.llmConfig);
+  const runtime = useRuntimeImageState();
   const [copied, setCopied] = useState(false);
 
   const result = useMemo(() => {
@@ -83,8 +85,8 @@ export function WorkflowCodeDialog({
       edges,
       image: {
         apiBaseUrl: imageConfig.apiBaseUrl,
-        model: imageConfig.selectedModel,
-        enabledModelIds: imageConfig.enabledModelIds,
+        model: runtime.selectedModel,
+        enabledModelIds: runtime.models.map((model) => model.id),
       },
       llm: {
         apiBaseUrl: llmConfig.apiBaseUrl,
@@ -92,7 +94,7 @@ export function WorkflowCodeDialog({
         visionModel: llmConfig.visionModel,
       },
     });
-  }, [open, nodes, edges, imageConfig, llmConfig]);
+  }, [open, nodes, edges, imageConfig, llmConfig, runtime]);
 
   const code = result?.ok ? result.code : "";
   const lineNumbers = useMemo(

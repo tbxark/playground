@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --mode go",
+    "dev:backend": "make dev-backend",
     "build": "tsc && vite build",
     "build:server": "VITE_SERVER_MODE=optional pnpm build",
     "preview": "vite preview",
@@ -12,8 +14,8 @@
     "deploy:cf:server": "VITE_SERVER_MODE=optional pnpm build && wrangler deploy",
     "vercel:env": "bash scripts/push-vercel-env.sh",
     "bundle:api": "node scripts/bundle-vercel-api.mjs",
-    "build:go": "bash server/build.sh",
-    "start:go": "./server/aiimage-playground",
+    "build:go": "make build-go",
+    "start:go": "make run",
     "deploy:vercel": "vercel deploy --prod"
   },
   "dependencies": {

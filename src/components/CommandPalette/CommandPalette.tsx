@@ -27,6 +27,7 @@ import { useCommandPaletteStore } from "../../stores/useCommandPaletteStore";
 import { useFreeCanvasStore } from "../../stores/useFreeCanvasStore";
 import { useWorkflowStore } from "../../stores/useWorkflowStore";
 import { modelDisplayName } from "../../services/imageService";
+import { useRuntimeImageState } from "../../hooks/useRuntimeImageState";
 
 export function CommandPalette() {
   const { t } = useTranslation();
@@ -45,14 +46,12 @@ export function CommandPalette() {
   const navigate = useNavigate();
   const location = useLocation();
 
+  const { theme, setTheme, exportConfig } = useConfigStore();
   const {
-    theme,
-    setTheme,
-    imageConfig,
+    models: activeModels,
     selectedModel,
     setSelectedModel,
-    exportConfig,
-  } = useConfigStore();
+  } = useRuntimeImageState();
 
   const { clearFinished } = useQueueStore();
 
@@ -99,9 +98,6 @@ export function CommandPalette() {
     else toast.info(t("palette.toastNothingToRedo"));
   };
 
-  const activeModels = imageConfig.models.filter((m) =>
-    imageConfig.enabledModelIds.includes(m.id)
-  );
 
   return (
     <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[15vh] px-4 bg-zinc-950/70 backdrop-blur-md animate-in fade-in-0 duration-150">

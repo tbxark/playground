@@ -532,7 +532,11 @@ export const useConfigStore = create<ConfigState>()(
           state.imageConfig.enabledModelIds = [];
         } else if (state.imageConfig.models.length > 0) {
           // Purge any video/chat/audio models that may have leaked into cache
+          // Managed sessions own their model list in useManagedConfigStore.
+          // Drop entries the previous merge-based implementation injected into
+          // the local catalog so they do not appear as local models on logout.
           const cleanedModels = state.imageConfig.models.filter((m) => {
+            if (m.ownedBy === "shared-server") return false;
             if (m.supportedEndpointTypes && m.supportedEndpointTypes.length > 0) {
               const hasOpenAi = m.supportedEndpointTypes.some((t) => t.toLowerCase() === "openai");
               if (!hasOpenAi) return false;

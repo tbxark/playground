@@ -40,6 +40,7 @@ import { PreviewNode } from "./nodes/PreviewNode";
 import { AssistantNode } from "./nodes/AssistantNode";
 import { WorkflowHelpDialog } from "./WorkflowHelpDialog";
 import { WorkflowCodeDialog } from "./WorkflowCodeDialog";
+import { useRuntimeImageState } from "../../hooks/useRuntimeImageState";
 import {
   WORKFLOW_NODE_MENU as NODE_MENU,
   isWorkflowConnectionTypeCompatible,
@@ -82,6 +83,7 @@ const NODE_TYPES = {
 
 function WorkflowCanvasInner() {
   const { t } = useTranslation();
+  const runtime = useRuntimeImageState();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, zoomIn, zoomOut, zoomTo, fitView } =
     useReactFlow();
@@ -569,15 +571,17 @@ function WorkflowCanvasInner() {
                     close();
                   }}
                 />
-                <CanvasMenuItem
-                  icon={Code2Icon}
-                  label={t("workflow.canvas.exportCode")}
-                  disabled={isEmpty}
-                  onSelect={() => {
-                    setCodeOpen(true);
-                    close();
-                  }}
-                />
+                {runtime.mode === "local" && (
+                  <CanvasMenuItem
+                    icon={Code2Icon}
+                    label={t("workflow.canvas.exportCode")}
+                    disabled={isEmpty}
+                    onSelect={() => {
+                      setCodeOpen(true);
+                      close();
+                    }}
+                  />
+                )}
                 <CanvasMenuItem
                   icon={UploadIcon}
                   label={t("workflow.canvas.importGraph")}

@@ -11,9 +11,7 @@ import { WorkflowNodeWrapper, WorkflowPortDef } from "./WorkflowNodeWrapper";
 import { Button } from "../../ui/button";
 import { Textarea } from "../../ui/textarea";
 import { Input } from "../../ui/input";
-import { useConfigStore } from "../../../stores/useConfigStore";
-import { polishPrompt } from "../../../services/llmAssistant";
-import { applyServerLlmOverlay } from "../../../services/effectiveConfig";
+import { requestPolish } from "../../../services/assistantRuntime";
 
 const PORTS: WorkflowPortDef[] = [
   { id: "output", name: "workflow.port.prompt", type: "text", direction: "output" },
@@ -31,7 +29,6 @@ const PRESET_CHIPS = [
 export function PromptNode({ node }: { node: WorkflowNode }) {
   const { t } = useTranslation();
   const { updateNodeData } = useWorkflowStore();
-  const { llmConfig, corsProxy, corsProxyMode } = useConfigStore();
   const [isPolishing, setIsPolishing] = useState(false);
   const [showNegative, setShowNegative] = useState(false);
 
@@ -42,11 +39,7 @@ export function PromptNode({ node }: { node: WorkflowNode }) {
     if (!promptText.trim()) return toast.warning(t("workflow.prompt.enterBasePromptFirst"));
     setIsPolishing(true);
     try {
-      const res = await polishPrompt(
-        promptText,
-        applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode }),
-        "enhance"
-      );
+      const res = await requestPolish(promptText, "enhance");
       updateNodeData(node.id, { promptText: res });
       toast.success(t("workflow.prompt.polishDone"));
     } catch (e) {

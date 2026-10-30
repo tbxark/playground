@@ -6,7 +6,9 @@ import { extractErrorMessage } from "../utils/error";
 import { i18n } from "@/i18n";
 import { useConfigStore } from "./useConfigStore";
 import { dispatchGenerate } from "../services/providers/dispatcher";
-import { applyServerImageOverlay, applyServerLlmOverlay } from "../services/effectiveConfig";
+import { generateManagedImage } from "../services/managedBackend";
+import { getRuntimeImageState } from "../services/runtimeConfig";
+import { requestImageToPrompt, requestPolish } from "../services/assistantRuntime";
 import { saveToHistory } from "../services/historyDb";
 import {
   getCanvasAsset,
@@ -15,7 +17,6 @@ import {
   putCanvasAsset,
 } from "../services/canvasAssetDb";
 import { dataUrlToBlob, fetchAsBlob } from "../utils/file";
-import { imageToPrompt, polishPrompt } from "../services/llmAssistant";
 import { isWorkflowConnectionTypeCompatible } from "../components/Workflow/nodeCatalog";
 
 export type WorkflowNodeType = "prompt" | "image" | "generator" | "preview" | "assistant";
@@ -884,13 +885,6 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
         // flight; the second result would overwrite the first and save again.
         if (inFlightExecution.has(nodeId)) return;
 
-        const config = useConfigStore.getState();
-        const llmConfig = applyServerLlmOverlay({
-          ...config.llmConfig,
-          corsProxy: config.corsProxy,
-          corsProxyMode: config.corsProxyMode,
-        });
-
         const mode = node.data.assistantMode || "enhance";
 
         inFlightExecution.add(nodeId);
@@ -926,7 +920,7 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
               throw new Error(i18n.t("workflowStore.errorNeedImageForVision"));
             }
 
-            result = await imageToPrompt(imageUrl, llmConfig, controller.signal);
+            result = await requestImageToPrompt(imageUrl, controller.signal);
           } else {
             // Text to text ("enhance" or "translate")
             const textParts: string[] = [];
@@ -951,9 +945,8 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
               throw new Error(i18n.t("workflowStore.errorNeedPromptDraft"));
             }
 
-            result = await polishPrompt(
+            result = await requestPolish(
               inputText.trim(),
-              llmConfig,
               mode === "translate" ? "translate" : "enhance",
               controller.signal
             );
@@ -1026,7 +1019,7 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
             prompt: node.data.outputPrompt || node.data.promptText || "",
             negativePrompt: node.data.negativePrompt,
             provider: node.data.providerId || "openai",
-            model: node.data.model || useConfigStore.getState().selectedModel,
+            model: node.data.model || getRuntimeImageState().selectedModel,
             size: node.data.size || "1:1",
             resolution: node.data.resolution || "1k",
             generationTimeMs: node.data.generationTimeMs ?? 3000,
@@ -1120,18 +1113,14 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
           return;
         }
 
-        // Config store resolution
+        // Runtime image config: managed sessions use the server list/default,
+        // local sessions keep the local selected model.
+        const runtime = getRuntimeImageState();
         const config = useConfigStore.getState();
         const providerId =
           genNode.data.providerId || config.selectedProviderId || "openai";
-        const provider =
-          config.providers.find((p) => p.id === providerId) || config.providers[0];
         // Manual selection only: node model, then the globally selected model — no silent fallback
-        const model =
-          genNode.data.model ||
-          config.imageConfig?.selectedModel ||
-          config.selectedModel ||
-          "";
+        const model = genNode.data.model || runtime.selectedModel || "";
 
         if (!model) {
           toast.warning(
@@ -1145,14 +1134,24 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
           return;
         }
 
-        if (!config.imageConfig.enabledModelIds.includes(model)) {
+        if (!runtime.isModelAllowed(model)) {
           toast.warning(
-            i18n.t("workflowStore.toastModelDisabled", { title: genNode.title })
+            i18n.t(
+              runtime.mode === "managed"
+                ? "workflowStore.toastSharedModelUnavailable"
+                : "workflowStore.toastModelDisabled",
+              { title: genNode.title }
+            )
+          );
+          const statusText = i18n.t(
+            runtime.mode === "managed"
+              ? "workflowStore.statusSharedModelUnavailable"
+              : "workflowStore.statusModelDisabled"
           );
           get().updateNodeData(nodeId, {
             status: "error",
-            statusText: i18n.t("workflowStore.statusModelDisabled"),
-            error: i18n.t("workflowStore.statusModelDisabled"),
+            statusText,
+            error: statusText,
           });
           return;
         }
@@ -1170,11 +1169,13 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
         });
 
         try {
-          const { provider: effectiveProvider, proxy: effectiveProxy } = applyServerImageOverlay(
-            provider,
-            { corsProxy: config.corsProxy, corsProxyMode: config.corsProxyMode }
-          );
-          const resultUrl = await dispatchGenerate(effectiveProvider, {
+          const onProgress = (p: { status: string; progress?: number }) => {
+            get().updateNodeData(nodeId, {
+              statusText: p.status,
+              progress: p.progress ?? 50,
+            });
+          };
+          const params = {
             providerId,
             model,
             prompt,
@@ -1185,16 +1186,21 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
             cfgScale: genNode.data.cfgScale,
             steps: genNode.data.steps,
             seed: genNode.data.seed,
-            corsProxy: effectiveProxy.corsProxy,
-            corsProxyMode: effectiveProxy.corsProxyMode,
             signal: controller.signal,
-            onProgress: (p) => {
-              get().updateNodeData(nodeId, {
-                statusText: p.status,
-                progress: p.progress ?? 50,
-              });
-            },
-          });
+            onProgress,
+          };
+          const resultUrl =
+            runtime.mode === "managed"
+              ? await generateManagedImage(params)
+              : await dispatchGenerate(
+                  config.providers.find((p) => p.id === providerId) ||
+                    config.providers[0],
+                  {
+                    ...params,
+                    corsProxy: config.corsProxy,
+                    corsProxyMode: config.corsProxyMode,
+                  }
+                );
 
           // Finished successfully
           const galleryNanoid = generateNanoid(10);

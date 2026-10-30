@@ -5,6 +5,7 @@
 .gitattributes
 node_modules
 dist
+build
 server/web/static
 server/aiimage-playground
 config.json

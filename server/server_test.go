@@ -117,7 +117,7 @@ func TestHealthReportsConfiguration(t *testing.T) {
 	upstream := &upstream{baseURL: mustParseURL(t, "https://gateway.example.com/v1"), apiKey: "sk-test"}
 	cfg.llmUpstream = upstream
 	cfg.imageUpstream = upstream
-	cfg.defaultModels = []string{"flux-1-dev", "qwen-image"}
+	cfg.managedImageModels = []string{"flux-1-dev", "qwen-image"}
 
 	server := newTestServer(t, cfg)
 	response, err := server.Client().Get(server.URL + "/api/health")
@@ -136,9 +136,6 @@ func TestHealthReportsConfiguration(t *testing.T) {
 	if !body.OK || !body.Auth.Enabled || !body.Upstreams.LLM || !body.Upstreams.Image {
 		t.Errorf("unexpected health body: %+v", body)
 	}
-	if len(body.DefaultModels) != 2 || body.DefaultModels[0] != "flux-1-dev" {
-		t.Errorf("defaultModels = %v", body.DefaultModels)
-	}
 }
 
 func TestHealthWithoutConfiguration(t *testing.T) {
@@ -150,9 +147,6 @@ func TestHealthWithoutConfiguration(t *testing.T) {
 	body := decodeBody[healthResponse](t, response)
 	if body.Auth.Enabled || body.Upstreams.LLM || body.Upstreams.Image {
 		t.Errorf("expected everything disabled, got %+v", body)
-	}
-	if body.DefaultModels != nil {
-		t.Errorf("defaultModels should be omitted, got %v", body.DefaultModels)
 	}
 }
 

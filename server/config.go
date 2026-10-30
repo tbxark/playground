@@ -40,7 +40,12 @@ type config struct {
 	llmUpstream   *upstream
 	imageUpstream *upstream
 
-	defaultModels []string
+	// managedImageModels is the image-model allowlist enforced by the managed
+	// generation endpoint.
+	managedImageModels []string
+	// Fixed assistant models for managed users.
+	managedLlmModel    string
+	managedVisionModel string
 }
 
 func (c config) authConfigured() bool {
@@ -64,8 +69,10 @@ func loadConfig() (config, error) {
 		authPassword:      os.Getenv("AUTH_PASSWORD"),
 		jwtSecret:         os.Getenv("JWT_SECRET"),
 		jwtTTL:            jwtTTLFromEnv(),
-		trustProxyHeaders: parseBoolEnv("TRUST_PROXY_HEADERS"),
-		defaultModels:     parseDefaultModels(os.Getenv("SERVER_DEFAULT_MODELS")),
+		trustProxyHeaders:  parseBoolEnv("TRUST_PROXY_HEADERS"),
+		managedImageModels: parseManagedImageModels(os.Getenv("MANAGED_IMAGE_MODELS")),
+		managedLlmModel:    strings.TrimSpace(os.Getenv("MANAGED_LLM_MODEL")),
+		managedVisionModel: strings.TrimSpace(os.Getenv("MANAGED_VISION_MODEL")),
 	}
 
 	port, err := strconv.Atoi(cfg.port)
@@ -117,14 +124,17 @@ func jwtTTLFromEnv() time.Duration {
 	return time.Duration(hours) * time.Hour
 }
 
-func parseDefaultModels(raw string) []string {
+func parseManagedImageModels(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
 	}
+	seen := make(map[string]bool)
 	var models []string
 	for _, part := range strings.Split(raw, ",") {
-		if id := strings.TrimSpace(part); id != "" {
+		id := strings.TrimSpace(part)
+		if id != "" && !seen[id] {
+			seen[id] = true
 			models = append(models, id)
 		}
 	}

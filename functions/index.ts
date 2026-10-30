@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { registerAuthRoutes } from "./auth";
 import { registerHealthRoutes } from "./health";
-import { registerProxyRoutes } from "./proxy";
+import { registerManagedRoutes } from "./managed";
 import type { ServerEnv } from "./env";
 
 /**
@@ -13,6 +13,6 @@ export function createApp(env: ServerEnv): Hono {
   const app = new Hono();
   registerHealthRoutes(app, env);
   registerAuthRoutes(app, env);
-  registerProxyRoutes(app, env);
+  registerManagedRoutes(app, env);
   return app;
 }

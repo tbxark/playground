@@ -45,10 +45,9 @@ import {
   testImageServiceConnection,
 } from "../services/imageService";
 import { testLlmConnection } from "../services/llmAssistant";
-import { applyServerLlmOverlay, buildServerAwareRequest } from "../services/effectiveConfig";
 import { serverFeatureEnabled } from "@/features/serverMode";
 import { useServerStore } from "../stores/useServerStore";
-import { mergeServerDefaultModels } from "../services/serverModels";
+import { useManagedConfigStore } from "../stores/useManagedConfigStore";
 import { cn } from "@/utils/cn";
 
 const validSections = ["image", "assistant", "server", "prompts", "network", "system"] as const;
@@ -139,6 +138,12 @@ export function SettingsPage() {
   const serverHealthStatus = useServerStore((s) => s.healthStatus);
   const serverToken = useServerStore((s) => s.token);
   const serverTokenExp = useServerStore((s) => s.tokenExp);
+  const serverManaged = serverFeatureEnabled && serverToken !== null;
+  const managedConfig = useManagedConfigStore((s) => s.config);
+  const managedStatus = useManagedConfigStore((s) => s.status);
+  const managedError = useManagedConfigStore((s) => s.error);
+  const loadManagedConfig = useManagedConfigStore((s) => s.load);
+  const resetManagedConfig = useManagedConfigStore((s) => s.reset);
   const [serverUsername, setServerUsername] = useState("");
   const [serverPassword, setServerPassword] = useState("");
   const [serverLoginBusy, setServerLoginBusy] = useState(false);
@@ -154,6 +159,31 @@ export function SettingsPage() {
       void useServerStore.getState().checkHealth();
     }
   }, [activeNav]);
+
+  useEffect(() => {
+    if (serverManaged) void loadManagedConfig();
+  }, [serverManaged, loadManagedConfig]);
+
+  // Managed sessions have no image/assistant settings. A stale bookmark falls
+  // back to the account section instead of rendering a page with no controls.
+  useEffect(() => {
+    if (!serverManaged) return;
+    if (activeNav !== "image" && activeNav !== "assistant") return;
+    setActiveNav("server");
+    if (location.hash !== "#server") {
+      navigate(
+        { pathname: location.pathname, search: location.search, hash: "#server" },
+        { replace: true }
+      );
+    }
+  }, [
+    serverManaged,
+    activeNav,
+    location.pathname,
+    location.search,
+    location.hash,
+    navigate,
+  ]);
 
   const importFileRef = useRef<HTMLInputElement>(null);
 
@@ -197,16 +227,11 @@ export function SettingsPage() {
     setIsTestingImage(true);
     setImageTestResult(null);
     try {
-      const request = buildServerAwareRequest(
-        "image",
-        { apiBaseUrl: imageConfig.apiBaseUrl, apiKey: imageConfig.apiKey },
-        { corsProxy, corsProxyMode }
-      );
       const res = await testImageServiceConnection(
-        request.apiBaseUrl,
-        request.apiKey,
-        request.corsProxy,
-        request.corsProxyMode
+        requestConfig.apiBaseUrl,
+        requestConfig.apiKey,
+        requestConfig.corsProxy,
+        requestConfig.corsProxyMode
       );
       if (!isCurrentRequest()) return;
       setImageTestResult(res);
@@ -239,16 +264,11 @@ export function SettingsPage() {
     setIsFetchingModels(true);
     setImageModelsMessage(null);
     try {
-      const request = buildServerAwareRequest(
-        "image",
-        { apiBaseUrl: requestConfig.apiBaseUrl, apiKey: requestConfig.apiKey },
-        { corsProxy: requestConfig.corsProxy, corsProxyMode: requestConfig.corsProxyMode }
-      );
       const onlineModels = await fetchOnlineModels(
-        request.apiBaseUrl,
-        request.apiKey,
-        request.corsProxy,
-        request.corsProxyMode
+        requestConfig.apiBaseUrl,
+        requestConfig.apiKey,
+        requestConfig.corsProxy,
+        requestConfig.corsProxyMode
       );
       if (!isCurrentRequest()) return;
       setFetchedModels(onlineModels);
@@ -281,7 +301,7 @@ export function SettingsPage() {
     setIsTestingLlm(true);
     setLlmTestResult(null);
     try {
-      const res = await testLlmConnection(applyServerLlmOverlay(requestConfig));
+      const res = await testLlmConnection(requestConfig);
       if (!isCurrentRequest()) return;
       setLlmTestResult(res);
       if (res.success) {
@@ -304,14 +324,21 @@ export function SettingsPage() {
     setIsFetchingLlmModels(true);
     setLlmFetchMessage(null);
     try {
-      const request = applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode });
       const res = await fetchOnlineLlmModels(
-        request.apiBaseUrl,
-        request.apiKey,
-        request.corsProxy,
-        request.corsProxyMode
+        llmConfig.apiBaseUrl,
+        llmConfig.apiKey,
+        corsProxy,
+        corsProxyMode
       );
       setLlmFetchedModels(res.textModels, res.visionModels);
+      // Fill a default only when the user has not chosen a model yet.
+      const latest = useConfigStore.getState().llmConfig;
+      if (!latest.model && res.textModels.length > 0) {
+        updateLlmConfig({ model: res.textModels[0].id });
+      }
+      if (!latest.visionModel && res.visionModels.length > 0) {
+        updateLlmConfig({ visionModel: res.visionModels[0].id });
+      }
       const successMsg = t("settings.fetchLlmModelsMessage", {
         textCount: res.textModels.length,
         visionCount: res.visionModels.length,
@@ -331,11 +358,11 @@ export function SettingsPage() {
     setServerLoginBusy(true);
     setServerLoginResult(null);
     const result = await useServerStore.getState().login(serverUsername.trim(), serverPassword);
-    setServerLoginBusy(false);
     if (result === "ok") {
       setServerPassword("");
-      const merged = mergeServerDefaultModels();
-      void useServerStore.getState().checkHealth();
+      await loadManagedConfig();
+      const merged =
+        useManagedConfigStore.getState().config?.image.models.length ?? 0;
       setServerLoginResult({
         success: true,
         message:
@@ -348,10 +375,12 @@ export function SettingsPage() {
     } else {
       setServerLoginResult({ success: false, message: t("settings.server.unreachable") });
     }
+    setServerLoginBusy(false);
   };
 
   const handleServerLogout = () => {
     useServerStore.getState().logout();
+    resetManagedConfig();
     setServerLoginResult(null);
   };
 
@@ -583,6 +612,7 @@ export function SettingsPage() {
       <div className="flex-1 w-full max-w-6xl mx-auto px-3 sm:px-6 py-4 md:py-8 flex flex-col md:flex-row gap-4 md:gap-8 items-start">
         {/* Left Navigation Sidebar */}
         <aside aria-label={t("settings.navAriaLabel")} className="w-full md:w-60 shrink-0 sticky top-0 md:top-20 flex flex-row md:flex-col gap-1.5 overflow-x-auto no-scrollbar">
+          {!serverManaged && (
           <button
             type="button"
             aria-current={activeNav === "image" ? "page" : undefined}
@@ -602,7 +632,9 @@ export function SettingsPage() {
               </div>
             </div>
           </button>
+          )}
 
+          {!serverManaged && (
           <button
             type="button"
             aria-current={activeNav === "assistant" ? "page" : undefined}
@@ -622,6 +654,7 @@ export function SettingsPage() {
               </div>
             </div>
           </button>
+          )}
 
           <button
             type="button"
@@ -709,7 +742,7 @@ export function SettingsPage() {
         {/* Right Content Area */}
         <main className="flex-1 min-w-0 w-full space-y-8">
           {/* 1. Image Generation Section */}
-          {activeNav === "image" && (
+          {activeNav === "image" && !serverManaged && (
             <div className="space-y-6">
               {/* Endpoint Card */}
               <div className="p-4 sm:p-6 rounded-3xl bg-card/80 border border-border space-y-5 shadow-xl">
@@ -1101,7 +1134,7 @@ export function SettingsPage() {
           )}
 
           {/* 2. Creative LLM Assistant Section */}
-          {activeNav === "assistant" && (
+          {activeNav === "assistant" && !serverManaged && (
             <div className="flex-1 w-full space-y-6">
               <div className="p-4 sm:p-6 rounded-3xl bg-card/80 border border-border space-y-6 shadow-xl">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1482,6 +1515,46 @@ export function SettingsPage() {
                     <p className="text-xs text-muted-foreground leading-relaxed">
                       {t("settings.server.takenOverNote")}
                     </p>
+                    {managedConfig && (
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <Badge variant="outline" className="font-mono">
+                          {t("settings.server.managedImageModels", {
+                            count: managedConfig.image.models.length,
+                          })}
+                        </Badge>
+                        <Badge variant="outline" className="font-mono">
+                          {t("settings.server.managedLlmModel", {
+                            model: managedConfig.assistant.textModel ?? "—",
+                          })}
+                        </Badge>
+                        <Badge variant="outline" className="font-mono">
+                          {t("settings.server.managedVisionModel", {
+                            model: managedConfig.assistant.visionModel ?? "—",
+                          })}
+                        </Badge>
+                      </div>
+                    )}
+                    {managedStatus === "error" && (
+                      <Alert variant="destructive">
+                        <AlertTitle>
+                          {t("settings.server.managedConfigErrorTitle")}
+                        </AlertTitle>
+                        <AlertDescription className="flex flex-wrap items-center gap-2">
+                          <span>
+                            {t("settings.server.managedConfigErrorDesc", {
+                              code: managedError,
+                            })}
+                          </span>
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            onClick={() => void loadManagedConfig()}
+                          >
+                            {t("common.retry")}
+                          </Button>
+                        </AlertDescription>
+                      </Alert>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-4">

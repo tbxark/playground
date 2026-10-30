@@ -16,31 +16,38 @@ Workers and Vercel. Both must stay in sync with `../shared/contracts.ts`.
 
 | Route | Behavior |
 | --- | --- |
-| `GET /api/health` | `{ok, auth:{enabled}, upstreams:{llm,image}, defaultModels?}` |
+| `GET /api/health` | `{ok, auth:{enabled}, upstreams:{llm,image}}` |
 | `POST /api/auth/login` | `{username, password}` → `{token, exp}`; 5 failures per IP lock for 60 s |
-| `ALL /api/proxy/llm/*` | Bearer JWT required; forwards to the LLM upstream with the server key |
-| `ALL /api/proxy/image/*` | Same, using the image upstream (falls back to `LLM_*`) |
+| `GET /api/config` | Bearer JWT required; returns `{image:{models,defaultModel}, assistant:{textModel?,visionModel?}}` |
+| `POST /api/generate` | Bearer JWT required; validates `model` against `MANAGED_IMAGE_MODELS`, injects the image key and forwards to `/images/generations` |
+| `GET /api/tasks/{id}` | Bearer JWT required; forwards task polling to the image upstream |
+| `POST /api/assistant/chat` | Bearer JWT required; uses the fixed text/vision model and returns `{text}` |
 | everything else | The embedded SPA, with `index.html` fallback for client routes |
 
-Only `models`, `chat/completions`, `images/*` and `tasks/*` are reachable
-through the proxy. Errors use `{"error":"<code>"}` with the same codes as the
-Hono server (`unauthorized`, `invalid_credentials`, `too_many_attempts`,
-`upstream_unconfigured`, `upstream_unreachable`, `path_not_allowed`,
-`cross_origin_forbidden`, `invalid_request`, `not_found`, `method_not_allowed`).
+Managed generation and assistant requests are typed application endpoints, not a
+generic proxy: the client cannot choose an assistant model and cannot use an
+image model outside `MANAGED_IMAGE_MODELS`. Errors use `{"error":"<code>"}`
+with the same codes as the Hono server (`unauthorized`, `invalid_credentials`,
+`too_many_attempts`, `upstream_unconfigured`, `upstream_unreachable`,
+`managed_config_incomplete`, `model_not_allowed`,
+`assistant_model_unconfigured`, `assistant_empty_response`,
+`cross_origin_forbidden`, `invalid_request`, `not_found`,
+`method_not_allowed`).
 
 ## Build
 
 From `playground/`:
 
 ```bash
-pnpm build:go
+pnpm build:go     # same as: make build-go
 ```
 
 That runs the web build with `VITE_SERVER_MODE=optional`, copies `dist/` into
-`web/static`, and produces `server/aiimage-playground`. For a pure-frontend
-binary use `VITE_SERVER_MODE=off ./server/build.sh`; `OUT=/path ./server/build.sh`
-chooses the output path. The Dockerfile at the playground root performs the
-same two steps and runs the binary on a distroless image.
+`web/static` (the `go:embed` staging directory), and produces
+`build/dist/aiimage-playground`. For a pure-frontend binary use
+`VITE_SERVER_MODE=off ./server/build.sh`; `OUT=/path ./server/build.sh` chooses
+the output path. The Dockerfile at the playground root performs the same two
+steps and runs the binary on a distroless image.
 
 A plain `go build` only embeds what is currently in `web/static`. On a clean
 checkout that is a committed placeholder, and the server answers with a hint
@@ -49,26 +56,44 @@ instead of the app — rerun the build script after any frontend change.
 ## Run
 
 ```bash
-cd server
-ENV_FILE=../.env.local ./aiimage-playground
+pnpm start:go     # same as: make run
 ```
+
+That runs `build/dist/aiimage-playground` with `ENV_FILE=.env.local` when the
+file exists. By hand:
+
+```bash
+ENV_FILE=.env.local ./build/dist/aiimage-playground
+```
+
+`make test` runs `go test -race ./...`.
+
+## Develop
+
+`pnpm dev` (or `make dev`) runs this server with `go run ./server` on
+`127.0.0.1:8080` and Vite on `127.0.0.1:5180`; Vite proxies `/api` to the Go
+process, so the frontend has hot reload without rebuilding the binary. Use
+`pnpm dev:backend` and `pnpm dev:web` to run the halves separately. The proxy
+keeps the browser `Host` header on purpose: the same-origin guard compares it
+with `Origin`, so `changeOrigin: true` would break managed requests.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `HOST` / `PORT` | `127.0.0.1` / `8080` | Listen address. The Docker image sets `0.0.0.0`. |
 | `ENV_FILE` | unset | Optional dotenv file; already-exported variables win. |
 | `TRUST_PROXY_HEADERS` | `false` | Set `true` only when a trusted proxy overwrites `X-Forwarded-For` / `CF-Connecting-IP` with the real client IP; otherwise forwarded IPs are ignored for login throttling. |
-| `AUTH_USERNAME` / `AUTH_PASSWORD` / `JWT_SECRET` | unset | All three enable login. The proxy requires a valid token signed with `JWT_SECRET`; without it, requests get 401. Removing the username/password stops new logins but does not revoke already-issued tokens — rotate `JWT_SECRET` to invalidate them. |
+| `AUTH_USERNAME` / `AUTH_PASSWORD` / `JWT_SECRET` | unset | All three enable login. Managed endpoints require a valid token signed with `JWT_SECRET`; without it, requests get 401. Removing the username/password stops new logins but does not revoke already-issued tokens — rotate `JWT_SECRET` to invalidate them. |
 | `JWT_TTL_HOURS` | `168` | Session lifetime. |
 | `LLM_BASE_URL` / `LLM_API_KEY` | unset | OpenAI-compatible upstream for the assistant. |
 | `IMAGE_BASE_URL` / `IMAGE_API_KEY` | fall back to `LLM_*` | Image-generation upstream. |
-| `SERVER_DEFAULT_MODELS` | unset | Comma-separated model ids for the health response. |
+| `MANAGED_IMAGE_MODELS` | unset | Comma-separated image model ids served by `/api/config` and enforced by `/api/generate`. |
+| `MANAGED_LLM_MODEL` / `MANAGED_VISION_MODEL` | unset | Fixed assistant text/vision models used by `/api/assistant/chat`. Missing values disable the corresponding managed assistant action. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 
-`GET /api/health` is the readiness probe. `./aiimage-playground -healthcheck`
-probes `http://$HOST:$PORT/api/health` (a wildcard `HOST` is probed on
-`127.0.0.1`) and exits non-zero on failure; the Dockerfile wires that into
-`HEALTHCHECK`.
+`GET /api/health` is the readiness probe.
+`./build/dist/aiimage-playground -healthcheck` probes
+`http://$HOST:$PORT/api/health` (a wildcard `HOST` is probed on `127.0.0.1`)
+and exits non-zero on failure; the Dockerfile wires that into `HEALTHCHECK`.
 
 When a reverse proxy sits in front, preserve the `Host` header, terminate TLS
 there, and configure request/body timeouts. The binary caps request reads at 10

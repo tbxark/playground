@@ -27,9 +27,9 @@ import {
   useFreeCanvasStore,
 } from "../../stores/useFreeCanvasStore";
 import { usePromptStore } from "../../stores/usePromptStore";
-import { useConfigStore } from "../../stores/useConfigStore";
 import { useLightboxStore } from "../../stores/useLightboxStore";
 import { useGenerateAction } from "../../hooks/useGenerateAction";
+import { useRuntimeImageState } from "../../hooks/useRuntimeImageState";
 import { isImeComposing, isOverlayOpen } from "@/utils/keyboard";
 import { cn } from "@/utils/cn";
 
@@ -48,7 +48,6 @@ export function SimpleGeneratePanel() {
   const { generate } = useGenerateAction("simple");
   const openLightbox = useLightboxStore((state) => state.open);
 
-  const { imageConfig, selectedModel, setSelectedModel } = useConfigStore();
   const {
     prompt,
     negativePrompt,
@@ -88,12 +87,14 @@ export function SimpleGeneratePanel() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmClearImages, setConfirmClearImages] = useState(false);
 
-  const activeModels = imageConfig.models.filter((model) =>
-    imageConfig.enabledModelIds.includes(model.id)
-  );
-  const modelAvailable = activeModels.some(
-    (model) => model.id === selectedModel
-  );
+  const {
+    mode,
+    models: activeModels,
+    selectedModel,
+    setSelectedModel,
+    isModelAllowed,
+  } = useRuntimeImageState();
+  const modelAvailable = isModelAllowed(selectedModel);
 
   // Missing/unrestored slots still render, but they cannot feed a request.
   const usableImages = simpleImages.filter(
@@ -533,7 +534,13 @@ export function SimpleGeneratePanel() {
             <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
               <span className="flex min-w-0 items-center gap-1.5">
                 <AlertTriangleIcon className="size-3.5 shrink-0" />
-                <span className="truncate">{t("simple.needModel")}</span>
+                <span className="truncate">
+                  {t(
+                    mode === "managed"
+                      ? "simple.needSharedModel"
+                      : "simple.needModel"
+                  )}
+                </span>
               </span>
               <Button
                 type="button"
@@ -542,7 +549,11 @@ export function SimpleGeneratePanel() {
                 className="shrink-0 border-amber-400/40 bg-transparent text-amber-100 hover:bg-amber-500/20 hover:text-white"
                 onClick={() => navigate("/settings#image")}
               >
-                {t("simple.goSettings")}
+                {t(
+                  mode === "managed"
+                    ? "simple.viewSettings"
+                    : "simple.goSettings"
+                )}
               </Button>
             </div>
           )}

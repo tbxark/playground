@@ -18,7 +18,7 @@ type ServerState = {
   /** Last /api/health observation; session-only. */
   health: ServerHealthResponse | null;
   healthStatus: HealthStatus;
-  /** Set when a proxied request came back 401; UI prompts a fresh login. */
+  /** Set when a managed request came back 401; UI prompts a fresh login. */
   unauthorized: boolean;
 
   checkHealth: () => Promise<void>;
@@ -26,8 +26,6 @@ type ServerState = {
   logout: () => void;
   markUnauthorized: () => void;
   clearUnauthorized: () => void;
-  /** True when a session can drive this upstream through the proxy. */
-  canUse: (kind: "llm" | "image") => boolean;
 };
 
 /**
@@ -86,23 +84,13 @@ export const useServerStore = create<ServerState>()(
       },
 
       markUnauthorized: () => {
-        // Only a real session can expire; a stray 401 on a hand-typed
-        // same-origin baseURL must not raise the banner.
+        // Only a real session can expire; a local provider's 401 must not
+        // raise the managed-session banner.
         if (get().token) set({ unauthorized: true });
       },
 
       clearUnauthorized: () => set({ unauthorized: false }),
 
-      canUse: (kind) => {
-        // A pure frontend build must never route to /api/proxy/* — not even
-        // when this browser carries a token left by a shared build.
-        if (!serverFeatureEnabled) return false;
-        const state = get();
-        if (!state.token || state.unauthorized) return false;
-        // A token without a completed health probe still counts: the proxy
-        // rejects upstream-missing paths with 503 and the caller surfaces it.
-        return state.health ? state.health.upstreams[kind] : true;
-      },
     }),
     {
       name: "universal-playground-server",

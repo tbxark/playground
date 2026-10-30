@@ -4,13 +4,14 @@ import { dataUrlToBlob, fetchAsBlob } from "../utils/file";
 import { generateNanoid } from "../utils/nanoid";
 import { extractErrorMessage } from "../utils/error";
 import { dispatchGenerate } from "../services/providers/dispatcher";
-import { applyServerImageOverlay } from "../services/effectiveConfig";
+import { generateManagedImage } from "../services/managedBackend";
 import {
   deleteHistoryRecord,
   saveToHistory,
 } from "../services/historyDb";
 import { GenerateParams, GenerationResult, TaskItem } from "../services/types";
 import { useConfigStore } from "./useConfigStore";
+import { getRuntimeImageState } from "../services/runtimeConfig";
 import { i18n } from "@/i18n";
 
 type QueueState = {
@@ -38,9 +39,15 @@ export const useQueueStore = create<QueueState>((set) => ({
   setError: (error) => set({ error }),
 
   enqueueBatch: (input, count) => {
-    const config = useConfigStore.getState().imageConfig;
-    if (!config.enabledModelIds.includes(input.model)) {
-      toast.warning(i18n.t("queue.toastEnableModelFirst"));
+    const runtime = getRuntimeImageState();
+    if (!runtime.isModelAllowed(input.model)) {
+      toast.warning(
+        i18n.t(
+          runtime.mode === "managed"
+            ? "queue.toastSharedModelUnavailable"
+            : "queue.toastEnableModelFirst"
+        )
+      );
       return [];
     }
 
@@ -223,13 +230,42 @@ export const useQueueStore = create<QueueState>((set) => ({
 }));
 
 async function executeTask(task: TaskItem) {
+  const runtime = getRuntimeImageState();
+  // A task may have been queued before a login changed the allowed model
+  // scope; never send a model the current session does not permit.
+  if (!runtime.isModelAllowed(task.input.model)) {
+    const errorMsg = i18n.t(
+      runtime.mode === "managed"
+        ? "queue.toastSharedModelUnavailable"
+        : "queue.toastEnableModelFirst"
+    );
+    toast.warning(errorMsg);
+    useQueueStore.setState((state) => ({
+      tasks: state.tasks.map((t) =>
+        t.id === task.id
+          ? {
+              ...t,
+              status: "failed",
+              statusText: i18n.t("queue.statusFailed"),
+              error: errorMsg,
+            }
+          : t
+      ),
+    }));
+    setTimeout(scheduleQueue, 10);
+    return;
+  }
+
   const controller = new AbortController();
   abortControllers.set(task.id, controller);
 
   const configState = useConfigStore.getState();
-  const provider = configState.providers.find((p) => p.id === task.input.providerId);
+  const provider =
+    runtime.mode === "local"
+      ? configState.providers.find((p) => p.id === task.input.providerId)
+      : null;
 
-  if (!provider) {
+  if (runtime.mode === "local" && !provider) {
     const errorMsg = i18n.t("queue.errorProviderNotFound", {
       provider: task.input.providerId,
     });
@@ -268,36 +304,38 @@ async function executeTask(task: TaskItem) {
   const startTime = Date.now();
 
   try {
-    const { provider: effectiveProvider, proxy: effectiveProxy } = applyServerImageOverlay(
-      provider,
-      {
-        corsProxy: configState.corsProxy || undefined,
-        corsProxyMode: configState.corsProxyMode,
-      }
-    );
-    const imageUrl = await dispatchGenerate(effectiveProvider, {
-      ...task.input,
-      corsProxy: effectiveProxy.corsProxy,
-      corsProxyMode: effectiveProxy.corsProxyMode,
-      signal: controller.signal,
-      onProgress: ({ status, progress }) => {
-        useQueueStore.setState((state) => ({
-          tasks: state.tasks.map((t) =>
-            t.id === task.id
-              ? {
-                  ...t,
-                  status: "processing",
-                  statusText: status,
-                  progress:
-                    typeof progress === "number"
-                      ? Math.max(t.progress, progress)
-                      : t.progress,
-                }
-              : t
-          ),
-        }));
-      },
-    });
+    const onProgress = ({ status, progress }: { status: string; progress?: number }) => {
+      useQueueStore.setState((state) => ({
+        tasks: state.tasks.map((t) =>
+          t.id === task.id
+            ? {
+                ...t,
+                status: "processing",
+                statusText: status,
+                progress:
+                  typeof progress === "number"
+                    ? Math.max(t.progress, progress)
+                    : t.progress,
+              }
+            : t
+        ),
+      }));
+    };
+
+    const imageUrl =
+      runtime.mode === "managed"
+        ? await generateManagedImage({
+            ...task.input,
+            signal: controller.signal,
+            onProgress,
+          })
+        : await dispatchGenerate(provider!, {
+            ...task.input,
+            corsProxy: configState.corsProxy || undefined,
+            corsProxyMode: configState.corsProxyMode,
+            signal: controller.signal,
+            onProgress,
+          });
 
     controller.signal.throwIfAborted();
 

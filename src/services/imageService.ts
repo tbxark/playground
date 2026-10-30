@@ -7,7 +7,6 @@ import {
   normalizeCorsProxy,
   normalizeCorsProxyMode,
 } from "@/utils/proxy";
-import { useServerStore } from "@/stores/useServerStore";
 import { GenerateParams } from "./types";
 
 export type ModelOption = {
@@ -225,20 +224,6 @@ export function createOpenAiClient(config: {
   if (proxying && mode === "auto") {
     clientOptions.fetch = (input, init) =>
       corsAwareFetch(input, init, { corsProxy: proxy, corsProxyMode: "auto" });
-  }
-
-  // Server-proxy mode: a 401 from our own /api/proxy/* means the login JWT
-  // expired (or was revoked). Flag it once so the shell can prompt a fresh
-  // login; the SDK error itself still surfaces through the caller.
-  if (typeof window !== "undefined" && cleanBase.startsWith(`${window.location.origin}/api/proxy/`)) {
-    const innerFetch = clientOptions.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
-    clientOptions.fetch = async (input, init) => {
-      const response = await innerFetch(input, init);
-      if (response.status === 401) {
-        useServerStore.getState().markUnauthorized();
-      }
-      return response;
-    };
   }
 
   return new OpenAI(clientOptions);
@@ -525,12 +510,18 @@ export function extractImageUrl(obj: unknown): string | null {
 }
 
 /**
- * Poll APIMart / OpenAI-compatible asynchronous task until finished using OpenAI client
- * Reference: https://docs.apimart.ai/en/api-reference/images/gpt-image-2.5/generation
+ * Poll APIMart / OpenAI-compatible asynchronous task until finished. The
+ * transport is injected so local (OpenAI SDK) and managed (app API) callers
+ * share the same response handling.
  */
-async function pollAsyncTask(
+type TaskStatusFetcher = (
   taskId: string,
-  client: OpenAI,
+  signal?: AbortSignal
+) => Promise<unknown>;
+
+export async function pollAsyncTaskWith(
+  taskId: string,
+  fetchTask: TaskStatusFetcher,
   signal?: AbortSignal,
   onProgress?: (update: { status: string; progress?: number }) => void
 ): Promise<string> {
@@ -546,7 +537,7 @@ async function pollAsyncTask(
     attempt++;
 
     try {
-      const json = (await client.get(`/tasks/${taskId}`, { signal })) as Record<string, any>;
+      const json = (await fetchTask(taskId, signal)) as Record<string, any>;
 
       const dataObj =
         json.data && typeof json.data === "object" && !Array.isArray(json.data)
@@ -630,17 +621,20 @@ async function pollAsyncTask(
       // A revoked key, a missing/expired task id or a malformed request will
       // never fix itself: surface it now instead of polling for three minutes
       // and reporting a timeout the user cannot act on.
-      if (err instanceof OpenAI.APIError) {
-        const status = err.status ?? 0;
-        if (
-          status >= 400 &&
-          status < 500 &&
-          status !== 408 &&
-          status !== 409 &&
-          status !== 429
-        ) {
-          throw err;
-        }
+      const status =
+        err instanceof OpenAI.APIError
+          ? err.status ?? 0
+          : typeof (err as { status?: unknown }).status === "number"
+            ? ((err as { status: number }).status)
+            : 0;
+      if (
+        status >= 400 &&
+        status < 500 &&
+        status !== 408 &&
+        status !== 409 &&
+        status !== 429
+      ) {
+        throw err;
       }
       if (err instanceof Error && err.message.includes(i18n.t("imgsvc.taskFailed", { reason: "" }))) {
         throw err;
@@ -653,6 +647,20 @@ async function pollAsyncTask(
   }
 
   throw new Error(i18n.t("imgsvc.pollTimeout", { taskId }));
+}
+
+function pollAsyncTask(
+  taskId: string,
+  client: OpenAI,
+  signal?: AbortSignal,
+  onProgress?: (update: { status: string; progress?: number }) => void
+): Promise<string> {
+  return pollAsyncTaskWith(
+    taskId,
+    (id, taskSignal) => client.get(`/tasks/${id}`, { signal: taskSignal }),
+    signal,
+    onProgress
+  );
 }
 
 /**

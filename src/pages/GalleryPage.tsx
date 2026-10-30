@@ -30,7 +30,7 @@ import { useFreeCanvasStore } from "../stores/useFreeCanvasStore";
 import { useLightboxStore } from "../stores/useLightboxStore";
 import { persistWorkflowImage, useWorkflowStore } from "../stores/useWorkflowStore";
 import { usePromptStore } from "../stores/usePromptStore";
-import { useConfigStore } from "../stores/useConfigStore";
+import { getRuntimeImageState } from "../services/runtimeConfig";
 import { HistoryRecord } from "../services/types";
 import { blobToDataUrl, downloadFile, formatDate } from "../utils/file";
 import { cn } from "@/utils/cn";
@@ -96,7 +96,6 @@ export function GalleryPage() {
   const openLightbox = useLightboxStore((state) => state.open);
   const { addNode } = useWorkflowStore();
   const { setPrompt, setNegativePrompt, setSize, setResolution, setSeed } = usePromptStore();
-  const { setSelectedModel: setGlobalSelectedModel, imageConfig } = useConfigStore();
 
   const [inspectRecord, setInspectRecord] = useState<HistoryRecord | null>(null);
   const [inspectImageUrl, setInspectImageUrl] = useState<string>("");
@@ -184,10 +183,17 @@ export function GalleryPage() {
     setResolution(record.resolution);
     setSeed(record.seed);
     if (record.model) {
-        if (imageConfig.enabledModelIds.includes(record.model)) {
-        setGlobalSelectedModel(record.model);
+      const runtime = getRuntimeImageState();
+      if (runtime.isModelAllowed(record.model)) {
+        runtime.setSelectedModel(record.model);
       } else {
-        toast.warning(t("gallery.toastModelDisabled"));
+        toast.warning(
+          t(
+            runtime.mode === "managed"
+              ? "gallery.toastSharedModelUnavailable"
+              : "gallery.toastModelDisabled"
+          )
+        );
       }
     }
     setInspectRecord(null);

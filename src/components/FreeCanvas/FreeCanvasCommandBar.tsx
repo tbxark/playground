@@ -42,9 +42,9 @@ import {
 } from "../../stores/useFreeCanvasStore";
 import { useLightboxStore } from "../../stores/useLightboxStore";
 import { useGenerateAction } from "../../hooks/useGenerateAction";
+import { useRuntimeImageState } from "../../hooks/useRuntimeImageState";
 import { useCardEdit } from "../../hooks/useCardEdit";
-import { imageToPrompt, polishPrompt } from "../../services/llmAssistant";
-import { applyServerLlmOverlay } from "../../services/effectiveConfig";
+import { requestImageToPrompt, requestPolish } from "../../services/assistantRuntime";
 import { resolveCardDataUrl } from "../../utils/cardSource";
 import { ReferenceHelpDialog } from "./ReferenceHelpDialog";
 import { cn } from "@/utils/cn";
@@ -142,17 +142,18 @@ export function FreeCanvasCommandBar() {
     resizePrompt();
   }, [prompt, resizePrompt]);
 
-  const { imageConfig, selectedModel, setSelectedModel, llmConfig, corsProxy, corsProxyMode } =
-    useConfigStore();
+  const { corsProxy, corsProxyMode } = useConfigStore();
 
   const promptLibraryEntries = usePromptLibraryStore((state) => state.entries);
 
-  const activeModels = imageConfig.models.filter((model) =>
-    imageConfig.enabledModelIds.includes(model.id)
-  );
-  const selectedModelAvailable = activeModels.some(
-    (model) => model.id === selectedModel
-  );
+  const {
+    mode: runtimeMode,
+    models: activeModels,
+    selectedModel,
+    setSelectedModel,
+    isModelAllowed,
+  } = useRuntimeImageState();
+  const selectedModelAvailable = isModelAllowed(selectedModel);
   const canGenerate = selectedModelAvailable && activeModels.length > 0;
 
   const openLightbox = useLightboxStore((state) => state.open);
@@ -239,12 +240,7 @@ export function FreeCanvasCommandBar() {
     const controller = beginLlmRequest();
     setIsPolishing(true);
     try {
-      const response = await polishPrompt(
-        prompt,
-        applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode }),
-        "enhance",
-        controller.signal
-      );
+      const response = await requestPolish(prompt, "enhance", controller.signal);
       setPrompt(response);
       toast.success(t("freeCanvas.toastPolishSuccess"));
     } catch (error) {
@@ -264,12 +260,7 @@ export function FreeCanvasCommandBar() {
     const controller = beginLlmRequest();
     setIsTranslating(true);
     try {
-      const response = await polishPrompt(
-        prompt,
-        applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode }),
-        "translate",
-        controller.signal
-      );
+      const response = await requestPolish(prompt, "translate", controller.signal);
       setPrompt(response);
       toast.success(t("freeCanvas.toastTranslateSuccess"));
     } catch (error) {
@@ -297,11 +288,7 @@ export function FreeCanvasCommandBar() {
         toast.error(t("freeCanvas.toastVisionFailed", { message: targetCard.name }));
         return;
       }
-      const response = await imageToPrompt(
-        targetUrl,
-        applyServerLlmOverlay({ ...llmConfig, corsProxy, corsProxyMode }),
-        controller.signal
-      );
+      const response = await requestImageToPrompt(targetUrl, controller.signal);
       setPrompt(response);
       toast.success(t("freeCanvas.toastVisionReverseSuccess"));
     } catch (error) {
@@ -365,7 +352,9 @@ export function FreeCanvasCommandBar() {
               title={
                 canGenerate
                   ? t("freeCanvas.generateCurrentTitle")
-                  : t("freeCanvas.goSettingsEnableModelTitle")
+                  : runtimeMode === "managed"
+                    ? t("freeCanvas.sharedModelsUnavailableTitle")
+                    : t("freeCanvas.goSettingsEnableModelTitle")
               }
               className="h-9 w-auto shrink-0 cursor-pointer bg-primary px-3 text-xs font-bold text-zinc-950 shadow-md shadow-primary/20 hover:bg-primary/90 sm:h-7"
             >
@@ -823,7 +812,9 @@ export function FreeCanvasCommandBar() {
                 title={
                   canGenerate
                     ? `${modeTitle} · ${modeBadge}`
-                    : t("freeCanvas.goSettingsEnableModelTitle")
+                    : runtimeMode === "managed"
+                      ? t("freeCanvas.sharedModelsUnavailableTitle")
+                      : t("freeCanvas.goSettingsEnableModelTitle")
                 }
                 className={cn(
                   "h-10 w-full shrink-0 cursor-pointer gap-1.5 whitespace-nowrap rounded-xl text-xs font-bold shadow-lg transition-transform hover:scale-[1.01] active:scale-[0.98] sm:h-9 sm:w-auto sm:px-4",

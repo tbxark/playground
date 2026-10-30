@@ -5,7 +5,9 @@
 #   docker compose -f docker-compose.build.yml up -d --build
 #
 # The default docker-compose.yml pulls the prebuilt multi-arch image from GHCR
-# instead and needs no source checkout (see .github/workflows/docker.yaml).
+# instead and needs no source checkout (see .github/workflows/docker.yaml); it
+# bind-mounts the env file read-only and sets ENV_FILE, while this dev variant
+# injects it with env_file so a missing .env.local is tolerated.
 #
 # On Apple Silicon, build for an x86_64 VPS explicitly:
 #   DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.build.yml build
@@ -28,10 +30,11 @@ services:
     container_name: aiimage-playground
     restart: unless-stopped
 
-    # Runtime secrets and upstreams. Optional so an "off" build starts without
-    # it; with no AUTH_* / LLM_* set the SPA still loads but /api stays unconfigured.
+    # Host path read by compose and injected as environment variables (nothing is
+    # mounted). Defaults to the checkout's .env.local; ENV_FILE_PATH overrides,
+    # e.g. ENV_FILE_PATH=/etc/playground/.env.local for the /etc deploy layout.
     env_file:
-      - path: .env.local
+      - path: ${ENV_FILE_PATH:-.env.local}
         required: false
 
     # Container-side listen address; must match the right-hand side of `ports`.

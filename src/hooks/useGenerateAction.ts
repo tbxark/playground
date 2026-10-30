@@ -8,8 +8,8 @@ import {
   useFreeCanvasStore,
 } from "../stores/useFreeCanvasStore";
 import { usePromptStore } from "../stores/usePromptStore";
-import { useConfigStore } from "../stores/useConfigStore";
 import { useQueueStore } from "../stores/useQueueStore";
+import { getRuntimeImageState } from "../services/runtimeConfig";
 import { GenerateParams } from "../services/types";
 
 export type GenerateMode = "canvas" | "simple";
@@ -28,13 +28,20 @@ export function useGenerateAction(mode: GenerateMode = "canvas") {
 
   const generate = useCallback(async (): Promise<string[]> => {
     const promptState = usePromptStore.getState();
-    const config = useConfigStore.getState();
+    const runtime = getRuntimeImageState();
     const canvas = useFreeCanvasStore.getState();
+    const model = runtime.selectedModel;
 
     if (mode === "simple") {
-      if (!config.imageConfig.enabledModelIds.includes(config.selectedModel)) {
-        toast.warning(t("freeCanvas.toastEnableModelInSettings"));
-        navigate("/settings#image");
+      if (!runtime.isModelAllowed(model)) {
+        toast.warning(
+          t(
+            runtime.mode === "managed"
+              ? "freeCanvas.toastSharedModelUnavailable"
+              : "freeCanvas.toastEnableModelInSettings"
+          )
+        );
+        navigate(runtime.mode === "managed" ? "/settings#server" : "/settings#image");
         return [];
       }
 
@@ -47,7 +54,7 @@ export function useGenerateAction(mode: GenerateMode = "canvas") {
 
       const params: GenerateParams = {
         providerId: "openai",
-        model: config.selectedModel,
+        model,
         prompt,
         negativePrompt: promptState.negativePrompt.trim() || undefined,
         imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
@@ -77,9 +84,15 @@ export function useGenerateAction(mode: GenerateMode = "canvas") {
       return [];
     }
 
-    if (!config.imageConfig.enabledModelIds.includes(config.selectedModel)) {
-      toast.warning(t("freeCanvas.toastEnableModelInSettings"));
-      navigate("/settings#image");
+    if (!runtime.isModelAllowed(model)) {
+      toast.warning(
+        t(
+          runtime.mode === "managed"
+            ? "freeCanvas.toastSharedModelUnavailable"
+            : "freeCanvas.toastEnableModelInSettings"
+        )
+      );
+      navigate(runtime.mode === "managed" ? "/settings#server" : "/settings#image");
       return [];
     }
 
@@ -118,7 +131,7 @@ export function useGenerateAction(mode: GenerateMode = "canvas") {
 
     const params: GenerateParams = {
       providerId: "openai",
-      model: config.selectedModel,
+      model,
       prompt: effectivePrompt,
       negativePrompt: promptState.negativePrompt.trim() || undefined,
       imageUrls,

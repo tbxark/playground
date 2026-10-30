@@ -3,23 +3,26 @@
 # for linux/amd64 and linux/arm64, so this file runs unchanged on a VPS, a NAS
 # or an Apple Silicon machine.
 #
-#   cp .env.example .env.local        # AUTH_* / JWT_SECRET / LLM_* / IMAGE_*
+#   sudo mkdir -p /etc/playground
+#   sudo install -m 644 .env.example /etc/playground/.env.local   # then fill it in
 #   docker compose pull
 #   docker compose up -d
 #   curl http://127.0.0.1:8080/api/health
 #
+# /etc/playground/.env.local is bind-mounted read-only into the container at the
+# same path, and the server reads it through ENV_FILE. 644 (world-readable) is
+# required because the runtime is nonroot, uid 65532. Point at another host file
+# with ENV_FILE_PATH=/path/to/.env.local — create the host file first, otherwise
+# Docker creates a directory at that path and the server refuses to start.
+#
 # Building from source instead: docker-compose.build.yml.
 #
-# No volume is needed: images, gallery and settings all live in the browser
-# (localStorage + IndexedDB). The env file only supplies the server-side
-# credentials the proxy injects into upstream requests.
+# No data volume is needed: images, gallery and settings all live in the browser
+# (localStorage + IndexedDB). The only mount is the read-only env file.
 #
 # Private package? Run `docker login ghcr.io` with a token that has
 # read:packages first, or make the package public in the repo's Packages
 # settings (Package settings → Change visibility).
-#
-# Requires Docker Compose >= 2.24 for the `env_file.required` object form; on
-# older versions change it to `env_file: [.env.local]` and always create the file.
 #
 # Behind a reverse proxy (Caddy/nginx/Traefik): preserve the Host header,
 # terminate TLS there, make the proxy OVERWRITE X-Forwarded-For with the
@@ -36,22 +39,44 @@ services:
     container_name: aiimage-playground
     restart: unless-stopped
 
-    # Runtime secrets and upstreams. Optional so the container also starts
-    # without it; with no AUTH_* / LLM_* set the SPA loads but /api stays
-    # unconfigured.
-    env_file:
-      - path: .env.local
-        required: false
+    # The dotenv file is read by the server itself: it is bind-mounted read-only
+    # below (see `volumes`) and ENV_FILE names it. The host path is configurable
+    # with ENV_FILE_PATH; the container path is fixed.
+    #
+    # Two consequences of mounting it:
+    # - the host file must exist before `up` — otherwise Docker creates a
+    #   directory at that path and the server exits with "is a directory";
+    # - it must be world-readable (chmod 644): the process runs as nonroot
+    #   (uid 65532), so a root-owned 600 file stops the container with
+    #   "permission denied" and it crash-loops.
+    # Editing the file only needs `docker compose restart`.
+    #
+    # Alternative without a mount: let compose inject the variables. The file may
+    # then be root-owned 600 and may even be absent, but edits require
+    # `docker compose up -d` (compose recreates the container).
+    # env_file:
+    #   - path: ${ENV_FILE_PATH:-/etc/playground/.env.local}
+    #     required: false
 
     # Container-side listen address; must match the right-hand side of `ports`.
-    # Everything else (TRUST_PROXY_HEADERS, LOG_LEVEL, JWT_TTL_HOURS, ...) comes
-    # from .env.local — `environment` entries would override it, so leave them out.
+    # ENV_FILE points at the mounted dotenv file; everything else
+    # (TRUST_PROXY_HEADERS, LOG_LEVEL, JWT_TTL_HOURS, ...) comes from that file.
+    # Entries set here win over the file — the loader skips exported names.
     environment:
       HOST: 0.0.0.0
       PORT: "8080"
+      ENV_FILE: /etc/playground/.env.local
+
+    volumes:
+      # host path : container path (must match ENV_FILE), read-only.
+      - ${ENV_FILE_PATH:-/etc/playground/.env.local}:/etc/playground/.env.local:ro
 
     ports:
-      # Change the host port with PLAYGROUND_PORT=9000 in the shell or .env.
+      # HOST_IP:HOST_PORT:CONTAINER_PORT. Host side is yours to choose with
+      # PLAYGROUND_PORT (or hardcode "9000:8080"); bind 127.0.0.1 when a reverse
+      # proxy is in front: "127.0.0.1:${PLAYGROUND_PORT:-8080}:8080".
+      # The container side must stay 8080 — it must match PORT above, and the
+      # image's HEALTHCHECK probes that port.
       - "${PLAYGROUND_PORT:-8080}:8080"
 
     # The image already declares HEALTHCHECK (`/aiimage-playground -healthcheck`

@@ -14,7 +14,8 @@ func clearServerEnv(t *testing.T) {
 		"HOST", "PORT", "LOG_LEVEL", "ENV_FILE",
 		"AUTH_USERNAME", "AUTH_PASSWORD", "JWT_SECRET", "JWT_TTL_HOURS",
 		"LLM_BASE_URL", "LLM_API_KEY", "IMAGE_BASE_URL", "IMAGE_API_KEY",
-		"SERVER_DEFAULT_MODELS", "TRUST_PROXY_HEADERS",
+		"MANAGED_IMAGE_MODELS", "MANAGED_LLM_MODEL", "MANAGED_VISION_MODEL",
+		"TRUST_PROXY_HEADERS",
 	} {
 		t.Setenv(key, "")
 	}
@@ -120,8 +121,8 @@ func TestAuthConfiguredRequiresAllThree(t *testing.T) {
 	}
 }
 
-func TestParseDefaultModels(t *testing.T) {
-	got := parseDefaultModels(" flux-1-dev, qwen-image ,, ")
+func TestParseManagedImageModels(t *testing.T) {
+	got := parseManagedImageModels(" flux-1-dev, qwen-image ,, ")
 	want := []string{"flux-1-dev", "qwen-image"}
 	if len(got) != len(want) {
 		t.Fatalf("models = %v", got)
@@ -131,7 +132,7 @@ func TestParseDefaultModels(t *testing.T) {
 			t.Errorf("models[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
-	if parsed := parseDefaultModels("   "); parsed != nil {
+	if parsed := parseManagedImageModels("   "); parsed != nil {
 		t.Errorf("blank list = %v, want nil", parsed)
 	}
 }

@@ -4,13 +4,17 @@
  * server-only types so the client bundle can import it safely.
  */
 
-/** Proxy route prefixes the server exposes (must stay in sync with functions/proxy.ts). */
-export const SERVER_PROXY_LLM_PREFIX = "/api/proxy/llm";
-export const SERVER_PROXY_IMAGE_PREFIX = "/api/proxy/image";
-
 /** Route the client hits to discover what the backend offers. */
 export const SERVER_HEALTH_PATH = "/api/health";
 export const SERVER_LOGIN_PATH = "/api/auth/login";
+/** Authenticated managed configuration (models + fixed assistant model ids). */
+export const SERVER_CONFIG_PATH = "/api/config";
+/** Authenticated generation facade; the server owns the model and API key. */
+export const SERVER_GENERATE_PATH = "/api/generate";
+/** Async task polling facade. */
+export const SERVER_TASK_PREFIX = "/api/tasks/";
+/** Authenticated assistant facade; the server owns the model and API key. */
+export const SERVER_ASSISTANT_PATH = "/api/assistant/chat";
 
 export type ServerHealthResponse = {
   ok: true;
@@ -18,11 +22,6 @@ export type ServerHealthResponse = {
   auth: { enabled: boolean };
   /** Which upstreams the server can proxy to. */
   upstreams: { llm: boolean; image: boolean };
-  /**
-   * Optional model ids the server operator pre-approves. The client merges and
-   * enables them after login when the user has no enabled models yet.
-   */
-  defaultModels?: string[];
 };
 
 export type ServerLoginRequest = {
@@ -34,6 +33,43 @@ export type ServerLoginResponse = {
   token: string;
   /** Unix seconds at which the token expires. */
   exp: number;
+};
+
+/** Full runtime configuration for a managed session. */
+export type ServerManagedConfig = {
+  image: {
+    models: string[];
+    defaultModel: string;
+  };
+  assistant: {
+    textModel?: string;
+    visionModel?: string;
+  };
+};
+
+/**
+ * Managed generation request. The model is checked against the server's image
+ * allowlist; prompt/image payloads and generation parameters are forwarded.
+ */
+export type ServerGenerateRequest = {
+  model: string;
+  prompt: string;
+  negativePrompt?: string;
+  imageUrls?: string[];
+  maskUrl?: string;
+  size: string;
+  resolution?: string;
+  seed?: number;
+  cfgScale?: number;
+  steps?: number;
+};
+
+export type ServerAssistantRequest =
+  | { kind: "polish" | "translate"; prompt: string }
+  | { kind: "vision"; image: string };
+
+export type ServerAssistantResponse = {
+  text: string;
 };
 
 export type ServerErrorBody = {
