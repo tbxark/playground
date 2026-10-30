@@ -19,7 +19,7 @@ type handlerOptions struct {
 // in-memory static filesystem.
 func newHandler(cfg config, opts handlerOptions) http.Handler {
 	if opts.httpClient == nil {
-		opts.httpClient = newUpstreamClient()
+		opts.httpClient = newUpstreamClient(cfg)
 	}
 	if opts.staticFS == nil {
 		opts.staticFS = embeddedStatic()

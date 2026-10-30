@@ -16,6 +16,9 @@ func clearServerEnv(t *testing.T) {
 		"LLM_BASE_URL", "LLM_API_KEY", "IMAGE_BASE_URL", "IMAGE_API_KEY",
 		"MANAGED_IMAGE_MODELS", "MANAGED_LLM_MODEL", "MANAGED_VISION_MODEL",
 		"TRUST_PROXY_HEADERS",
+		"UPSTREAM_PROXY_URL",
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "no_proxy",
 	} {
 		t.Setenv(key, "")
 	}
@@ -153,6 +156,46 @@ func TestLoadConfigTrustProxyHeaders(t *testing.T) {
 		}
 		if cfg.trustProxyHeaders != want {
 			t.Errorf("TRUST_PROXY_HEADERS=%q gave %v, want %v", value, cfg.trustProxyHeaders, want)
+		}
+	}
+}
+
+func TestLoadConfigParsesUpstreamProxy(t *testing.T) {
+	clearServerEnv(t)
+	for raw, want := range map[string]string{
+		"":                                 "",
+		"  ":                               "",
+		"http://127.0.0.1:7890":            "http://127.0.0.1:7890",
+		"127.0.0.1:7890":                   "http://127.0.0.1:7890",
+		"socks5://user:pass@10.0.0.2:1080": "socks5://user:pass@10.0.0.2:1080",
+	} {
+		t.Setenv("UPSTREAM_PROXY_URL", raw)
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("UPSTREAM_PROXY_URL=%q: %v", raw, err)
+		}
+		got := ""
+		if cfg.upstreamProxy != nil {
+			got = cfg.upstreamProxy.String()
+		}
+		if got != want {
+			t.Errorf("UPSTREAM_PROXY_URL=%q parsed as %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestLoadConfigRejectsInvalidUpstreamProxy(t *testing.T) {
+	for _, raw := range []string{
+		"ftp://proxy.example.com:21",
+		"http://",
+		"http://proxy.example.com:3128/prefix",
+		"http://proxy.example.com:3128/?x=1",
+		"http://proxy.example.com:notaport",
+	} {
+		clearServerEnv(t)
+		t.Setenv("UPSTREAM_PROXY_URL", raw)
+		if _, err := loadConfig(); err == nil {
+			t.Errorf("UPSTREAM_PROXY_URL=%q should be rejected", raw)
 		}
 	}
 }

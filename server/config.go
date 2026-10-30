@@ -40,6 +40,11 @@ type config struct {
 	llmUpstream   *upstream
 	imageUpstream *upstream
 
+	// upstreamProxy is UPSTREAM_PROXY_URL: one explicit outbound proxy for
+	// upstream API calls. Nil means the standard HTTP_PROXY / HTTPS_PROXY /
+	// NO_PROXY variables are honored instead (see upstreamProxyFunc).
+	upstreamProxy *url.URL
+
 	// managedImageModels is the image-model allowlist enforced by the managed
 	// generation endpoint.
 	managedImageModels []string
@@ -63,12 +68,12 @@ func (c config) upstreamFor(kind proxyKind) *upstream {
 
 func loadConfig() (config, error) {
 	cfg := config{
-		host:              envOr("HOST", "127.0.0.1"),
-		port:              envOr("PORT", "8080"),
-		authUsername:      os.Getenv("AUTH_USERNAME"),
-		authPassword:      os.Getenv("AUTH_PASSWORD"),
-		jwtSecret:         os.Getenv("JWT_SECRET"),
-		jwtTTL:            jwtTTLFromEnv(),
+		host:               envOr("HOST", "127.0.0.1"),
+		port:               envOr("PORT", "8080"),
+		authUsername:       os.Getenv("AUTH_USERNAME"),
+		authPassword:       os.Getenv("AUTH_PASSWORD"),
+		jwtSecret:          os.Getenv("JWT_SECRET"),
+		jwtTTL:             jwtTTLFromEnv(),
 		trustProxyHeaders:  parseBoolEnv("TRUST_PROXY_HEADERS"),
 		managedImageModels: parseManagedImageModels(os.Getenv("MANAGED_IMAGE_MODELS")),
 		managedLlmModel:    strings.TrimSpace(os.Getenv("MANAGED_LLM_MODEL")),
@@ -79,6 +84,12 @@ func loadConfig() (config, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return config{}, fmt.Errorf("PORT must be a TCP port number, got %q", cfg.port)
 	}
+
+	proxy, err := parseProxyURL(os.Getenv("UPSTREAM_PROXY_URL"))
+	if err != nil {
+		return config{}, fmt.Errorf("UPSTREAM_PROXY_URL: %w", err)
+	}
+	cfg.upstreamProxy = proxy
 
 	// IMAGE_* falls back to LLM_* so a single gateway serving both only needs
 	// the LLM_* pair (same rule as functions/env.ts).

@@ -77,6 +77,7 @@ func main() {
 		"auth_enabled", cfg.authConfigured(),
 		"llm_upstream", upstreamLabel(cfg.llmUpstream),
 		"image_upstream", upstreamLabel(cfg.imageUpstream),
+		"upstream_proxy", proxyLabel(cfg),
 		"managed_image_models", len(cfg.managedImageModels),
 		"managed_llm_model", cfg.managedLlmModel,
 		"managed_vision_model", cfg.managedVisionModel,
@@ -93,9 +94,9 @@ func main() {
 // newUpstreamClient is the shared client for proxy calls. There is no overall
 // timeout: image generations can legitimately take minutes, and the request
 // context cancels the upstream call when the browser disconnects.
-func newUpstreamClient() *http.Client {
+func newUpstreamClient(cfg config) *http.Client {
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: upstreamProxyFunc(cfg.upstreamProxy),
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -111,6 +112,16 @@ func newUpstreamClient() *http.Client {
 	return &http.Client{Transport: transport}
 }
 
+// newHealthcheckClient never uses a proxy: the probe only targets the local
+// listener, and a global HTTP(S)_PROXY would otherwise send 127.0.0.1 through
+// it (net/http exempts only the literal name "localhost").
+func newHealthcheckClient() *http.Client {
+	return &http.Client{
+		Timeout:   3 * time.Second,
+		Transport: &http.Transport{Proxy: nil},
+	}
+}
+
 // runHealthcheck backs the container HEALTHCHECK. It only needs HOST/PORT, so
 // it works before a full config load and never trips over missing credentials.
 func runHealthcheck() int {
@@ -121,7 +132,7 @@ func runHealthcheck() int {
 	if host == "0.0.0.0" || host == "::" || host == "[::]" {
 		host = "127.0.0.1"
 	}
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := newHealthcheckClient()
 	response, err := client.Get("http://" + net.JoinHostPort(host, port) + "/api/health")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "healthcheck:", err)

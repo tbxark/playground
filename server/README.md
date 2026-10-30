@@ -88,7 +88,19 @@ with `Origin`, so `changeOrigin: true` would break managed requests.
 | `IMAGE_BASE_URL` / `IMAGE_API_KEY` | fall back to `LLM_*` | Image-generation upstream. |
 | `MANAGED_IMAGE_MODELS` | unset | Comma-separated image model ids served by `/api/config` and enforced by `/api/generate`. |
 | `MANAGED_LLM_MODEL` / `MANAGED_VISION_MODEL` | unset | Fixed assistant text/vision models used by `/api/assistant/chat`. Missing values disable the corresponding managed assistant action. |
+| `UPSTREAM_PROXY_URL` | unset | One outbound proxy for upstream API calls: `http`, `https`, `socks5` or `socks5h` (a bare `host:port` means `http://`, and `user:pass@` is supported). Overrides the standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` variables, including `NO_PROXY`. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+
+When `UPSTREAM_PROXY_URL` is unset, upstream calls honor the usual
+`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` variables (either case), which may
+also live in the dotenv file — that is Go's default transport behavior. Go does
+not read OS-level proxy settings (macOS System Settings, Windows Internet
+Options), so a proxy configured only there has to be exported explicitly.
+Loopback upstreams (`localhost`, `127.0.0.0/8`, `::1`) are always dialed
+directly, even with an explicit proxy, so a local gateway keeps working. The
+startup log prints the effective proxy as `upstream_proxy` (`none`,
+`environment`, or the URL without credentials), and `-healthcheck` never uses a
+proxy.
 
 `GET /api/health` is the readiness probe.
 `./build/dist/aiimage-playground -healthcheck` probes
