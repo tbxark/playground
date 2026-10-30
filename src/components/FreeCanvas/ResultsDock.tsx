@@ -13,6 +13,7 @@ import {
   ImagesIcon,
   Loader2Icon,
   LocateFixedIcon,
+  MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
   RotateCcwIcon,
@@ -25,6 +26,8 @@ import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Progress } from "../ui/progress";
 import { ConfirmDialog } from "../ui/confirm-dialog";
+import { CanvasContextMenu } from "../Canvas/CanvasContextMenu";
+import { CanvasMenuItem } from "../Canvas/CanvasChrome";
 import { useQueueStore } from "../../stores/useQueueStore";
 import { useFreeCanvasStore } from "../../stores/useFreeCanvasStore";
 import { useLightboxStore } from "../../stores/useLightboxStore";
@@ -56,6 +59,13 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [pendingPromoteId, setPendingPromoteId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Per-card overflow menu: the result row only has room for four icon buttons
+  // at this width, so the canvas-only actions live in one labelled menu.
+  const [menu, setMenu] = useState<{
+    taskId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const drawerRef = useRef<HTMLElement>(null);
 
   // Derive each list with a shallow selector: a progress tick for one task
@@ -121,13 +131,36 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
   );
   const finishedCount = completedCount + failedTasks.length;
   const totalCount = completedCount + activeTasks.length + failedTasks.length;
-  const orphanUnsavedCount = useMemo(() => {
-    const ids = new Set(taskIdKey ? taskIdKey.split("|") : []);
-    return unsavedCards.filter(
-      (card) => !card.resultTaskId || !ids.has(card.resultTaskId)
-    ).length;
-  }, [taskIdKey, unsavedCards]);
-  const displayCount = totalCount + (isCanvas ? orphanUnsavedCount : 0);
+  const taskIds = useMemo(
+    () => new Set(taskIdKey ? taskIdKey.split("|") : []),
+    [taskIdKey]
+  );
+  // Only cards the queue no longer knows about (e.g. after a refresh, since the
+  // queue is not persisted) need their own retry row. A card that still has a
+  // task is already listed as a result with its own status and retry link, so
+  // showing it here too would duplicate the same image twice.
+  const orphanUnsavedCards = useMemo(
+    () =>
+      unsavedCards.filter(
+        (card) => !card.resultTaskId || !taskIds.has(card.resultTaskId)
+      ),
+    [taskIds, unsavedCards]
+  );
+  const displayCount = totalCount + (isCanvas ? orphanUnsavedCards.length : 0);
+  // The header only has room for the total; running and failed counts are
+  // carried by the badge tone and its tooltip instead of two extra chips that
+  // used to squeeze the panel title into an ellipsis.
+  const countHint = [
+    t("freeCanvas.resultsCount", { count: displayCount }),
+    activeTasks.length > 0
+      ? t("shell.app.activeQueueCount", { count: activeTasks.length })
+      : null,
+    failedTasks.length > 0
+      ? `${failedTasks.length} ${t("common.failed").toLowerCase()}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const cardByNanoid = useMemo(() => {
     const map = new Map<string, string>();
@@ -191,14 +224,6 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
     setIsMobileOpen(false);
   };
 
-  const handleAddToCanvas = async (task: (typeof completedTasks)[number]) => {
-    const cardId = await ensureCard(task);
-    if (!cardId) return;
-    selectCard(cardId);
-    bridge?.focusCard(cardId);
-    setIsMobileOpen(false);
-  };
-
   const handleEdit = async (task: (typeof completedTasks)[number]) => {
     const result = task.result!;
     const cardId = await ensureCard(task);
@@ -235,14 +260,20 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
     setPendingPromoteId(null);
   };
 
-  const handleLocateLatest = () => {
+  // "Show on canvas" and "Add to canvas" are one action: ensureCard brings a
+  // dismissed result back, then the card is selected and framed.
+  const handleShowOnCanvas = async (task: (typeof completedTasks)[number]) => {
+    const cardId = await ensureCard(task);
+    if (!cardId) return;
+    selectCard(cardId);
+    bridge?.focusCard(cardId);
+    setIsMobileOpen(false);
+  };
+
+  const handleLocateLatest = async () => {
     const latest = completedTasks[0];
     if (!latest) return;
-    const cardId = cardByNanoid.get(latest.result!.nanoid);
-    if (cardId) {
-      selectCard(cardId);
-      bridge?.focusCard(cardId);
-    }
+    await handleShowOnCanvas(latest);
   };
 
   const handleRetrySave = async (
@@ -349,54 +380,51 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
         )}
       >
         {isCollapsed && !isMobileOpen ? (
-          <div className="hidden h-full flex-col items-center gap-3 py-3 lg:flex">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={t("freeCanvas.expandResultsPanel")}
-              title={t("freeCanvas.expandResultsPanel")}
-              onClick={() => setIsCollapsed(false)}
-              className="cursor-pointer text-zinc-300 hover:text-white"
-            >
-              <ChevronLeftIcon />
-            </Button>
-            <div
-              className="flex flex-col items-center gap-2 text-primary"
-              title={t("freeCanvas.resultsCount", { count: displayCount })}
-            >
-              <HistoryIcon className="size-4" />
-              <span className="text-[10px] font-medium [writing-mode:vertical-rl]">
+          // The whole rail is the expand target; the chevron is only its
+          // affordance. The identity group is centred in the remaining height
+          // and keeps reporting running/failed tasks while the list is folded.
+          <button
+            type="button"
+            aria-label={t("freeCanvas.expandResultsPanel")}
+            aria-expanded={false}
+            title={countHint}
+            onClick={() => setIsCollapsed(false)}
+            className="group hidden h-full w-full cursor-pointer flex-col items-center gap-3 py-3 text-zinc-500 outline-none transition-colors hover:bg-white/[0.04] hover:text-zinc-300 focus-visible:bg-white/[0.06] focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-inset lg:flex"
+          >
+            <ChevronLeftIcon className="size-4 shrink-0 text-zinc-400 transition-colors group-hover:text-zinc-100" />
+            <span className="my-auto flex flex-col items-center gap-2.5 text-primary">
+              {activeTasks.length > 0 ? (
+                <Loader2Icon className="size-4 animate-spin" />
+              ) : failedTasks.length > 0 ? (
+                <AlertTriangleIcon className="size-4 text-red-400" />
+              ) : (
+                <HistoryIcon className="size-4" />
+              )}
+              <span className="text-[10px] font-medium tracking-wide [writing-mode:vertical-rl]">
                 {t("freeCanvas.resultsItems", { count: displayCount })}
               </span>
-            </div>
-          </div>
+            </span>
+          </button>
         ) : (
           <>
-            <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-3">
+            <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
               <div className="flex min-w-0 items-center gap-2">
-                <HistoryIcon className="size-4 shrink-0 text-primary" />
-                <span className="truncate text-sm font-semibold">
+                <span className="truncate text-[13px] font-semibold tracking-tight">
                   {t("freeCanvas.results")}
                 </span>
-                <Badge
-                  variant="outline"
-                  className="h-5 shrink-0 border-white/10 text-[10px] text-zinc-300"
+                <span
+                  title={countHint}
+                  className={cn(
+                    "flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full px-1.5 text-[10px] font-medium tabular-nums",
+                    failedTasks.length > 0
+                      ? "bg-red-500/10 text-red-300"
+                      : activeTasks.length > 0
+                        ? "bg-primary/15 text-primary"
+                        : "bg-white/[0.06] text-zinc-300"
+                  )}
                 >
                   {displayCount}
-                </Badge>
-                {activeTasks.length > 0 && (
-                  <span className="flex items-center gap-1 text-[10px] text-primary">
-                    <Loader2Icon className="size-3 animate-spin" />
-                    {activeTasks.length}
-                  </span>
-                )}
-                {failedTasks.length > 0 && (
-                  <span className="flex items-center gap-1 text-[10px] text-red-400">
-                    <AlertTriangleIcon className="size-3" />
-                    {failedTasks.length}
-                  </span>
-                )}
+                </span>
               </div>
 
               <div className="flex shrink-0 items-center gap-1">
@@ -407,7 +435,7 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                     size="icon-xs"
                     aria-label={t("freeCanvas.cards.locateLatest")}
                     title={t("freeCanvas.cards.locateLatest")}
-                    onClick={handleLocateLatest}
+                    onClick={() => void handleLocateLatest()}
                     className="cursor-pointer text-zinc-400 hover:text-white"
                   >
                     <LocateFixedIcon />
@@ -419,7 +447,7 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                     variant="ghost"
                     size="xs"
                     onClick={clearFinished}
-                    className="cursor-pointer text-[10px] text-zinc-400 hover:text-white"
+                    className="h-6 cursor-pointer px-1.5 text-[10px] font-normal text-zinc-500 hover:text-white"
                     title={t("freeCanvas.cards.clearFinishedHint")}
                   >
                     {t("common.clear")}
@@ -530,25 +558,27 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                 </div>
               ))}
 
-              {isCanvas && unsavedCards.length > 0 && (
-                <section className="space-y-1.5 rounded-xl border border-amber-400/25 bg-amber-500/5 p-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
-                      <SaveIcon className="size-3" />
+              {isCanvas && orphanUnsavedCards.length > 0 && (
+                // A quiet section instead of a warning box: the amber only
+                // marks the status line, so it reads as part of the same list.
+                <section className="space-y-1">
+                  <div className="flex items-center gap-1.5 px-1 text-[10px] font-medium text-amber-300/80">
+                    <SaveIcon className="size-3 shrink-0" />
+                    <span className="truncate">
                       {t("freeCanvas.cards.unsavedGroup")}
                     </span>
-                    <span className="text-[10px] text-amber-300/70">
-                      {unsavedCards.length}
+                    <span className="tabular-nums text-amber-300/50">
+                      {orphanUnsavedCards.length}
                     </span>
                   </div>
-                  {unsavedCards.map((card) => (
+                  {orphanUnsavedCards.map((card) => (
                     <div
                       key={`unsaved-${card.id}`}
-                      className="flex items-center gap-2 rounded-lg bg-black/20 px-2 py-1.5"
+                      className="flex items-center gap-2 rounded-lg border border-amber-400/20 bg-amber-500/[0.04] px-2 py-1.5"
                     >
                       <button
                         type="button"
-                        className="size-8 shrink-0 overflow-hidden rounded-md bg-zinc-900"
+                        className="size-9 shrink-0 overflow-hidden rounded-md bg-zinc-900 transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                         onClick={() => {
                           selectCard(card.id);
                           if (card.url) {
@@ -582,13 +612,13 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                           {card.prompt || t("freeCanvas.noPrompt")}
                         </p>
                         <p
-                          className="truncate text-[9px] text-amber-300/80"
+                          className="truncate text-[10px] text-amber-300/80"
                           title={card.saveError || undefined}
                         >
                           {card.saveStatus === "unavailable"
                             ? t("freeCanvas.cards.cannotRetrySave")
                             : card.saveError ||
-                              t("freeCanvas.saveStatusNotSaved")}
+                              renderSaveLabel(card.saveStatus)}
                         </p>
                       </div>
                       <Button
@@ -608,7 +638,7 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                             setBusyId(null);
                           })();
                         }}
-                        className="h-6 shrink-0 cursor-pointer px-1.5 text-[10px] text-primary"
+                        className="h-6 shrink-0 cursor-pointer px-1.5 text-[10px] font-normal text-primary"
                         title={t("freeCanvas.cards.retrySave")}
                       >
                         {busyId === card.id ||
@@ -622,7 +652,7 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                         type="button"
                         variant="ghost"
                         size="icon-xs"
-                        className="cursor-pointer text-zinc-400 hover:text-white"
+                        className="cursor-pointer text-zinc-500 hover:text-white"
                         title={t("freeCanvas.cards.locateLatest")}
                         aria-label={t("freeCanvas.cards.locateLatest")}
                         onClick={() => {
@@ -645,159 +675,219 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                 const saveStatus =
                   (cardId != null ? cardStatusById.get(cardId) : undefined) ??
                   result.gallerySaveStatus;
+                const canRetry =
+                  saveStatus !== "saved" &&
+                  saveStatus !== "saving" &&
+                  saveStatus !== "unavailable" &&
+                  saveStatus !== "local";
+                // Colour carries the exception, not the normal state: a saved
+                // result stays neutral, a failed or unsaved save is the only
+                // one that gets a dot and a warning tone.
+                const saveState =
+                  saveStatus === "failed"
+                    ? { tone: "text-red-400", dot: "bg-red-400" }
+                    : saveStatus === "saving"
+                      ? { tone: "text-zinc-400", dot: null }
+                      : saveStatus === "unavailable" || canRetry
+                        ? { tone: "text-amber-300/90", dot: "bg-amber-400/80" }
+                        : { tone: "text-zinc-500", dot: null };
 
                 return (
-                  <article
-                    key={task.id}
-                    className={cn(
-                      "flex gap-2 rounded-xl border bg-white/[0.03] p-2 transition-colors",
-                      isSelected
-                        ? "border-primary/70 ring-1 ring-primary/40"
-                        : "border-white/10 hover:border-white/20"
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => void handleOpenLarge(task)}
-                      aria-label={t("freeCanvas.cards.openLargeAria", {
-                        name: result.prompt || result.nanoid,
-                      })}
-                      className="relative aspect-square w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-900"
-                    >
-                      <img
-                        src={result.url}
-                        alt={result.prompt || t("freeCanvas.generatedResultAlt")}
-                        className="size-full object-cover"
-                      />
-                      {isSelected && (
-                        <span className="absolute inset-x-0 bottom-0 bg-primary/90 py-0.5 text-[9px] font-medium text-black">
-                          {t("freeCanvas.cards.onCanvasBadge")}
-                        </span>
+                  <React.Fragment key={task.id}>
+                    <article
+                      className={cn(
+                        "flex gap-2.5 rounded-xl border bg-white/[0.03] p-2 transition-colors",
+                        isSelected
+                          ? "border-primary/70 ring-1 ring-primary/40"
+                          : "border-white/10 hover:border-white/20 hover:bg-white/[0.05]"
                       )}
-                    </button>
-
-                    <div className="flex min-w-0 flex-1 flex-col">
-                      <p className="line-clamp-3 flex-1 text-[11px] leading-relaxed text-zinc-300">
-                        {result.prompt || t("freeCanvas.noPrompt")}
-                      </p>
-                      <div className="mt-1 flex items-center gap-1 text-[9px] text-zinc-500">
-                        <span className="truncate">{result.nanoid.slice(0, 8)}</span>
-                        <span>·</span>
-                        <span className="truncate">{renderSaveLabel(saveStatus)}</span>
-                        {saveStatus !== "saved" &&
-                          saveStatus !== "saving" &&
-                          saveStatus !== "unavailable" &&
-                          saveStatus !== "local" && (
-                          <button
-                            type="button"
-                            onClick={() => void handleRetrySave(task)}
-                            disabled={busyId === task.id}
-                            title={t("freeCanvas.cards.retrySave")}
-                            className="shrink-0 cursor-pointer text-primary hover:underline disabled:opacity-50"
-                          >
-                            {t("freeCanvas.cards.retrySave")}
-                          </button>
+                    >
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenLarge(task)}
+                        aria-label={t("freeCanvas.cards.openLargeAria", {
+                          name: result.prompt || result.nanoid,
+                        })}
+                        className="relative aspect-square w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
+                      >
+                        <img
+                          src={result.url}
+                          alt={
+                            result.prompt || t("freeCanvas.generatedResultAlt")
+                          }
+                          className="size-full object-cover"
+                        />
+                        {isSelected && (
+                          <span className="absolute left-1 top-1 rounded-full bg-black/65 px-1.5 py-0.5 text-[9px] font-medium text-zinc-100 backdrop-blur-sm">
+                            {t("freeCanvas.cards.onCanvasBadge")}
+                          </span>
                         )}
-                      </div>
+                      </button>
 
-                      <div className="mt-1 flex items-center gap-0.5">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-xs"
-                          title={t("freeCanvas.cards.openLarge")}
-                          aria-label={t("freeCanvas.cards.openLarge")}
-                          onClick={() => void handleOpenLarge(task)}
-                          className="cursor-pointer"
+                      <div className="flex min-w-0 flex-1 flex-col">
+                        <p
+                          className="line-clamp-2 text-[11px] leading-[1.55] text-zinc-200"
+                          title={result.prompt || undefined}
                         >
-                          <EyeIcon />
-                        </Button>
-                        {isCanvas && (
-                          <>
-                            <Button
+                          {result.prompt || t("freeCanvas.noPrompt")}
+                        </p>
+
+                        <div className="mt-1 flex min-w-0 items-center gap-1 text-[10px]">
+                          {saveStatus === "saving" ? (
+                            <Loader2Icon className="size-2.5 shrink-0 animate-spin text-primary" />
+                          ) : saveState.dot ? (
+                            <span
+                              aria-hidden="true"
+                              className={cn(
+                                "size-1.5 shrink-0 rounded-full",
+                                saveState.dot
+                              )}
+                            />
+                          ) : null}
+                          <span className={cn("truncate", saveState.tone)}>
+                            {renderSaveLabel(saveStatus)}
+                          </span>
+                          {canRetry && (
+                            <button
                               type="button"
-                              variant="ghost"
-                              size="icon-xs"
-                              title={t("preview.edit.action")}
-                              aria-label={t("preview.edit.action")}
-                              disabled={isCommittingMain}
-                              onClick={() => void handleEdit(task)}
-                              className="cursor-pointer"
+                              onClick={() => void handleRetrySave(task)}
+                              disabled={busyId === task.id}
+                              title={t("freeCanvas.cards.retrySave")}
+                              className="shrink-0 cursor-pointer text-primary hover:underline disabled:opacity-50"
                             >
-                              <PencilIcon />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-xs"
-                              title={t("freeCanvas.cards.addToCanvas")}
-                              aria-label={t("freeCanvas.cards.addToCanvas")}
-                              onClick={() => void handleAddToCanvas(task)}
-                              className="cursor-pointer"
-                            >
-                              <PlusIcon />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-xs"
-                              title={t("freeCanvas.cards.setAsMainTitle")}
-                              aria-label={t("freeCanvas.cards.setAsMain")}
-                              disabled={isCommittingMain}
-                              onClick={() => void handleSetMain(task)}
-                              className="cursor-pointer text-primary"
-                            >
-                              <SparklesIcon />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-xs"
-                              title={t("freeCanvas.setAsReference")}
-                              aria-label={t("freeCanvas.setAsReference")}
-                              onClick={() => void addResultAsReference(result)}
-                              className="cursor-pointer"
-                            >
-                              <ImagePlusIcon />
-                            </Button>
-                          </>
-                        )}
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-xs"
-                          title={t("freeCanvas.downloadOriginal")}
-                          aria-label={t("freeCanvas.downloadOriginal")}
-                          onClick={() => void handleDownloadResult(result)}
-                          className={cn("cursor-pointer", !isCanvas && "ml-auto")}
-                        >
-                          <DownloadIcon />
-                        </Button>
-                        {isCanvas && cardId && (
+                              {t("freeCanvas.cards.retrySave")}
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Four icon actions stay visible on the canvas card;
+                            the rest live in one labelled menu. Seven icons
+                            never fit this column and used to spill past the
+                            card edge. */}
+                        <div className="mt-auto flex items-center gap-0.5 pt-1.5">
                           <Button
                             type="button"
                             variant="ghost"
                             size="icon-xs"
-                            title={t("freeCanvas.cards.locateLatest")}
-                            aria-label={t("freeCanvas.cards.locateLatest")}
-                            onClick={() => {
-                              selectCard(cardId);
-                              bridge?.focusCard(cardId);
-                            }}
-                            className="ml-auto cursor-pointer"
+                            title={t("freeCanvas.cards.openLarge")}
+                            aria-label={t("freeCanvas.cards.openLarge")}
+                            onClick={() => void handleOpenLarge(task)}
+                            className="cursor-pointer text-zinc-300 hover:text-white"
                           >
-                            <LocateFixedIcon />
+                            <EyeIcon />
                           </Button>
-                        )}
+                          {isCanvas && (
+                            <>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-xs"
+                                title={t("preview.edit.action")}
+                                aria-label={t("preview.edit.action")}
+                                disabled={isCommittingMain}
+                                onClick={() => void handleEdit(task)}
+                                className="cursor-pointer text-zinc-300 hover:text-white"
+                              >
+                                <PencilIcon />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-xs"
+                                title={t("freeCanvas.cards.setAsMainTitle")}
+                                aria-label={t("freeCanvas.cards.setAsMain")}
+                                disabled={isCommittingMain}
+                                onClick={() => void handleSetMain(task)}
+                                className="cursor-pointer text-primary hover:text-primary"
+                              >
+                                <SparklesIcon />
+                              </Button>
+                            </>
+                          )}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-xs"
+                            title={t("freeCanvas.downloadOriginal")}
+                            aria-label={t("freeCanvas.downloadOriginal")}
+                            onClick={() => void handleDownloadResult(result)}
+                            className="cursor-pointer text-zinc-300 hover:text-white"
+                          >
+                            <DownloadIcon />
+                          </Button>
+                          {isCanvas && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-xs"
+                              title={t("freeCanvas.cards.more")}
+                              aria-label={t("freeCanvas.cards.more")}
+                              aria-haspopup="menu"
+                              aria-expanded={menu?.taskId === task.id}
+                              data-canvas-context-menu-trigger
+                              onClick={(event) => {
+                                if (menu?.taskId === task.id) {
+                                  setMenu(null);
+                                  return;
+                                }
+                                const rect =
+                                  event.currentTarget.getBoundingClientRect();
+                                setMenu({
+                                  taskId: task.id,
+                                  x: rect.right - 208,
+                                  y: rect.bottom + 6,
+                                });
+                              }}
+                              className={cn(
+                                "cursor-pointer text-zinc-300 hover:text-white",
+                                menu?.taskId === task.id &&
+                                  "bg-white/10 text-white"
+                              )}
+                            >
+                              <MoreHorizontalIcon />
+                            </Button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </article>
+                    </article>
+
+                    {isCanvas && (
+                      <CanvasContextMenu
+                        open={menu?.taskId === task.id}
+                        x={menu?.x ?? 0}
+                        y={menu?.y ?? 0}
+                        onClose={() => setMenu(null)}
+                        label={t("freeCanvas.cards.more")}
+                      >
+                        <CanvasMenuItem
+                          icon={cardId ? LocateFixedIcon : PlusIcon}
+                          label={
+                            cardId
+                              ? t("freeCanvas.cards.locateOnCanvas")
+                              : t("freeCanvas.cards.addToCanvas")
+                          }
+                          onSelect={() => void handleShowOnCanvas(task)}
+                        />
+                        <CanvasMenuItem
+                          icon={ImagePlusIcon}
+                          label={t("freeCanvas.setAsReference")}
+                          onSelect={() => void addResultAsReference(result)}
+                        />
+                      </CanvasContextMenu>
+                    )}
+                  </React.Fragment>
                 );
               })}
 
-              {totalCount === 0 && unsavedCards.length === 0 && (
-                <div className="flex min-h-32 items-center justify-center text-xs text-zinc-500">
-                  {t("freeCanvas.noResults")}
+              {totalCount === 0 && orphanUnsavedCards.length === 0 && (
+                <div className="flex min-h-40 flex-col items-center justify-center gap-1.5 px-6 text-center">
+                  <HistoryIcon className="size-5 text-zinc-600" />
+                  <p className="text-xs text-zinc-400">
+                    {t("freeCanvas.noResults")}
+                  </p>
+                  <p className="text-[10px] leading-relaxed text-zinc-500">
+                    {t("freeCanvas.noResultsHint")}
+                  </p>
                 </div>
               )}
             </div>
