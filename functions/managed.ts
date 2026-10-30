@@ -10,6 +10,7 @@ import {
 import {
   SERVER_ASSISTANT_PATH,
   SERVER_CONFIG_PATH,
+  SERVER_ERROR_IMAGE_INPUT_UNSUPPORTED,
   SERVER_GENERATE_PATH,
   SERVER_TASK_PREFIX,
   type ServerAssistantRequest,
@@ -203,6 +204,18 @@ export function registerManagedRoutes(app: Hono, env: ServerEnv): void {
 
     const official = isOfficialOpenAiEndpoint(upstream.baseUrl);
     const isDalle = body.model.toLowerCase().startsWith("dall-e");
+    if (
+      official &&
+      ((body.imageUrls?.length ?? 0) > 0 || Boolean(body.maskUrl))
+    ) {
+      // Official /images/generations ignores image inputs; official editing is
+      // /images/edits, which this managed facade does not implement. Fail
+      // loudly instead of billing for a text-only image.
+      return c.json<ServerErrorBody>(
+        { error: SERVER_ERROR_IMAGE_INPUT_UNSUPPORTED },
+        400
+      );
+    }
     const payload: Record<string, unknown> = {
       model: body.model,
       prompt: body.prompt,

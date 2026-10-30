@@ -15,6 +15,41 @@ export function isBlobUrl(url?: string): boolean {
   return Boolean(url && url.startsWith("blob:"));
 }
 
+/**
+ * Blob URLs can outlive the store entry that created them: the shared image
+ * workspace may still be showing one while the card/input that owns it is
+ * removed. Lease counting defers the revoke until the last consumer lets go,
+ * instead of breaking an open editor.
+ */
+const leaseCounts = new Map<string, number>();
+const retiredWhileLeased = new Set<string>();
+
+export function leaseObjectUrl(url?: string): void {
+  if (!url || !isBlobUrl(url)) return;
+  leaseCounts.set(url, (leaseCounts.get(url) ?? 0) + 1);
+}
+
+export function releaseObjectUrlLease(url?: string): void {
+  if (!url || !isBlobUrl(url)) return;
+  const next = (leaseCounts.get(url) ?? 1) - 1;
+  if (next > 0) {
+    leaseCounts.set(url, next);
+    return;
+  }
+  leaseCounts.delete(url);
+  if (retiredWhileLeased.delete(url)) URL.revokeObjectURL(url);
+}
+
+/** Revoke now, unless a consumer still holds a lease; then revoke on release. */
+export function retireObjectUrl(url?: string): void {
+  if (!url || !isBlobUrl(url)) return;
+  if ((leaseCounts.get(url) ?? 0) > 0) {
+    retiredWhileLeased.add(url);
+    return;
+  }
+  URL.revokeObjectURL(url);
+}
+
 export function revokeObjectUrl(url?: string): void {
   if (url && isBlobUrl(url)) {
     URL.revokeObjectURL(url);
@@ -25,6 +60,11 @@ type CardSource = {
   url: string;
   assetKey?: string;
   galleryNanoid?: string;
+  /**
+   * A saved edited bitmap is a separate gallery work. It must be readable even
+   * though the card is `isEdited` (the original generation record is not).
+   */
+  editedGalleryNanoid?: string;
   isEdited?: boolean;
 };
 
@@ -41,6 +81,15 @@ export async function resolveCardBlob(
     try {
       const blob = await getCanvasAsset(card.assetKey);
       if (blob) return blob;
+    } catch {
+      // fall through to the other sources
+    }
+  }
+
+  if (card.editedGalleryNanoid) {
+    try {
+      const record = await getHistoryRecordByNanoid(card.editedGalleryNanoid);
+      if (record?.imageBlob) return record.imageBlob;
     } catch {
       // fall through to the other sources
     }

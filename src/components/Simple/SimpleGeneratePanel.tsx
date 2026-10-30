@@ -30,6 +30,7 @@ import { usePromptStore } from "../../stores/usePromptStore";
 import { useLightboxStore } from "../../stores/useLightboxStore";
 import { useGenerateAction } from "../../hooks/useGenerateAction";
 import { useRuntimeImageState } from "../../hooks/useRuntimeImageState";
+import { useSimpleEdit } from "../../hooks/useSimpleEdit";
 import { isImeComposing, isOverlayOpen } from "@/utils/keyboard";
 import { cn } from "@/utils/cn";
 
@@ -47,6 +48,7 @@ export function SimpleGeneratePanel() {
   const navigate = useNavigate();
   const { generate } = useGenerateAction("simple");
   const openLightbox = useLightboxStore((state) => state.open);
+  const { buildInputEditable } = useSimpleEdit();
 
   const {
     prompt,
@@ -69,17 +71,25 @@ export function SimpleGeneratePanel() {
 
   const {
     simpleImages,
+    isHydrated,
+    hydrationError,
+    retryHydrateAssets,
     addSimpleImages,
     removeSimpleImage,
     moveSimpleImage,
     clearSimpleImages,
+    removeUnavailableSimpleImages,
   } = useFreeCanvasStore(
     useShallow((state) => ({
       simpleImages: state.simpleImages,
+      isHydrated: state.isHydrated,
+      hydrationError: state.hydrationError,
+      retryHydrateAssets: state.retryHydrateAssets,
       addSimpleImages: state.addSimpleImages,
       removeSimpleImage: state.removeSimpleImage,
       moveSimpleImage: state.moveSimpleImage,
       clearSimpleImages: state.clearSimpleImages,
+      removeUnavailableSimpleImages: state.removeUnavailableSimpleImages,
     }))
   );
 
@@ -97,11 +107,35 @@ export function SimpleGeneratePanel() {
   const modelAvailable = isModelAllowed(selectedModel);
 
   // Missing/unrestored slots still render, but they cannot feed a request.
+  // Until hydration has actually run, an empty URL is "restoring", not
+  // "missing": deleting it would permanently drop a persisted input.
   const usableImages = simpleImages.filter(
-    (image) => Boolean(image.url) && !image.missing
+    (image) => Boolean(image.url) && !image.missing && !image.restoreError
   );
+  const unavailableImages = isHydrated
+    ? simpleImages.filter((image) => image.missing)
+    : [];
+  const restoreFailedImages = isHydrated
+    ? simpleImages.filter((image) => image.restoreError)
+    : [];
+  const needsHydration = simpleImages.length > 0;
+  const restoring = needsHydration && !isHydrated;
+  const hydrationBlocked =
+    needsHydration && (!isHydrated || hydrationError);
+  const baseImage = simpleImages[0];
+  const baseUnavailable = Boolean(
+    isHydrated && baseImage && baseImage.missing
+  );
+  // A skipped base would silently promote the next image to slot 1, changing
+  // what the provider receives. Block only that case; an all-missing list with
+  // a prompt is still a legitimate text-to-image request.
+  const baseWouldShift =
+    isHydrated &&
+    baseUnavailable &&
+    usableImages.some((image) => image.id !== baseImage?.id);
   const hasInput = prompt.trim().length > 0 || usableImages.length > 0;
-  const canGenerate = hasInput && modelAvailable;
+  const canGenerate =
+    hasInput && modelAvailable && !baseWouldShift && !hydrationBlocked;
 
   const handleGenerate = async () => {
     if (!canGenerate || isSubmitting) return;
@@ -138,6 +172,7 @@ export function SimpleGeneratePanel() {
       title: image.name,
       subtitle: t("simple.imagesLabel"),
       fileName: image.name.includes(".") ? image.name : `${image.name}.png`,
+      editable: buildInputEditable(image),
     });
   };
 
@@ -184,7 +219,11 @@ export function SimpleGeneratePanel() {
 
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
               {simpleImages.map((image, index) => {
-                const unavailable = image.missing || !image.url;
+                const slotRestoring = !isHydrated && !image.url;
+                const slotRestoreFailed = Boolean(image.restoreError);
+                const unavailable =
+                  image.missing ||
+                  (!image.url && !slotRestoring && !slotRestoreFailed);
                 return (
                   <div
                     key={image.id}
@@ -195,7 +234,28 @@ export function SimpleGeneratePanel() {
                         : "border-white/10"
                     )}
                   >
-                    {unavailable ? (
+                    {slotRestoring ? (
+                      <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2 text-center">
+                        <Loader2Icon className="size-4 animate-spin text-primary" />
+                        <span className="text-[10px] leading-tight text-zinc-400">
+                          {t("simple.restoringImage")}
+                        </span>
+                      </div>
+                    ) : slotRestoreFailed ? (
+                      <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2 text-center">
+                        <AlertTriangleIcon className="size-4 text-amber-400" />
+                        <span className="text-[10px] leading-tight text-amber-200">
+                          {t("simple.restoreFailedShort")}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void retryHydrateAssets()}
+                          className="cursor-pointer text-[10px] text-primary underline underline-offset-2"
+                        >
+                          {t("common.retry")}
+                        </button>
+                      </div>
+                    ) : unavailable ? (
                       <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2 text-center">
                         <AlertTriangleIcon className="size-4 text-amber-400" />
                         <span className="text-[10px] leading-tight text-amber-200">
@@ -231,15 +291,17 @@ export function SimpleGeneratePanel() {
                         : t("simple.referenceSlot", { index })}
                     </span>
 
-                    <button
-                      type="button"
-                      onClick={() => removeSimpleImage(image.id)}
-                      className="absolute right-1 top-1 z-10 flex size-6 cursor-pointer items-center justify-center rounded-md bg-black/70 text-zinc-300 backdrop-blur-md transition-colors hover:bg-red-500/80 hover:text-white"
-                      title={t("simple.removeImage")}
-                      aria-label={t("simple.removeImage")}
-                    >
-                      <XIcon className="size-3" />
-                    </button>
+                    {!slotRestoring && !slotRestoreFailed && (
+                      <button
+                        type="button"
+                        onClick={() => removeSimpleImage(image.id)}
+                        className="absolute right-1 top-1 z-10 flex size-6 cursor-pointer items-center justify-center rounded-md bg-black/70 text-zinc-300 backdrop-blur-md transition-colors hover:bg-red-500/80 hover:text-white"
+                        title={t("simple.removeImage")}
+                        aria-label={t("simple.removeImage")}
+                      >
+                        <XIcon className="size-3" />
+                      </button>
+                    )}
 
                     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end gap-1 bg-gradient-to-t from-black/85 to-transparent px-1.5 pb-1 pt-4">
                       <p
@@ -309,6 +371,47 @@ export function SimpleGeneratePanel() {
                 </label>
               )}
             </div>
+
+            {restoring && (
+              <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] text-zinc-300">
+                <Loader2Icon className="size-3.5 shrink-0 animate-spin text-primary" />
+                <span>{t("simple.restoringImages")}</span>
+              </div>
+            )}
+
+            {!restoring && restoreFailedImages.length > 0 && (
+              <div className="flex items-start justify-between gap-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
+                <span className="min-w-0">{t("simple.restoreFailedHint")}</span>
+                <button
+                  type="button"
+                  onClick={() => void retryHydrateAssets()}
+                  className="shrink-0 cursor-pointer text-[10px] font-medium text-amber-100 underline underline-offset-2 hover:text-white"
+                >
+                  {t("simple.retryRestore")}
+                </button>
+              </div>
+            )}
+
+            {!restoring &&
+              restoreFailedImages.length === 0 &&
+              unavailableImages.length > 0 && (
+              <div className="flex items-start justify-between gap-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
+                <span className="min-w-0">
+                  {baseWouldShift
+                    ? t("simple.baseUnavailableHint")
+                    : t("simple.unavailableImagesHint", {
+                        unavailable: unavailableImages.length,
+                      })}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeUnavailableSimpleImages()}
+                  className="shrink-0 cursor-pointer text-[10px] font-medium text-amber-100 underline underline-offset-2 hover:text-white"
+                >
+                  {t("simple.removeUnavailable")}
+                </button>
+              </div>
+            )}
 
             {simpleImages.some((image) => image.persist === "memory") && (
               <p className="text-[10px] leading-relaxed text-amber-300/90">
@@ -557,8 +660,31 @@ export function SimpleGeneratePanel() {
               </Button>
             </div>
           )}
-          {!hasInput && (
+          {restoring && (
+            <p className="flex items-center gap-1.5 text-[11px] text-zinc-300">
+              <Loader2Icon className="size-3 animate-spin text-primary" />
+              {t("simple.restoringImages")}
+            </p>
+          )}
+          {!restoring && hydrationError && (
+            <div className="flex items-center justify-between gap-2 text-[11px] text-amber-300">
+              <span>{t("simple.restoreBlockedHint")}</span>
+              <button
+                type="button"
+                onClick={() => void retryHydrateAssets()}
+                className="shrink-0 cursor-pointer text-[10px] font-medium text-amber-100 underline underline-offset-2 hover:text-white"
+              >
+                {t("simple.retryRestore")}
+              </button>
+            </div>
+          )}
+          {!hasInput && !restoring && !hydrationError && (
             <p className="text-[11px] text-amber-300">{t("simple.needInput")}</p>
+          )}
+          {baseWouldShift && !hydrationError && (
+            <p className="text-[11px] text-amber-300">
+              {t("simple.baseUnavailableHint")}
+            </p>
           )}
           <Button
             type="button"

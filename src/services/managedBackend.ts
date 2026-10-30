@@ -2,6 +2,7 @@ import { i18n } from "@/i18n";
 import { useServerStore } from "@/stores/useServerStore";
 import {
   SERVER_ASSISTANT_PATH,
+  SERVER_ERROR_IMAGE_INPUT_UNSUPPORTED,
   SERVER_GENERATE_PATH,
   SERVER_TASK_PREFIX,
   type ServerAssistantRequest,
@@ -35,6 +36,9 @@ async function managedError(response: Response): Promise<never> {
     if (typeof body.error === "string") message = body.error;
   } catch {
     // keep the status text
+  }
+  if (message === SERVER_ERROR_IMAGE_INPUT_UNSUPPORTED) {
+    message = i18n.t("imgsvc.officialImageEditUnsupported");
   }
   const error = new Error(message) as StatusError;
   error.status = response.status;

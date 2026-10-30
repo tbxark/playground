@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
+import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Columns3Icon,
@@ -92,6 +93,8 @@ function getBounds(cards: CanvasCard[]) {
 }
 
 export function FreeCanvasViewport() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const { t } = useTranslation();
   const {
     cards,
@@ -107,6 +110,7 @@ export function FreeCanvasViewport() {
     selectCard,
     arrangeCards,
     maskStrokes,
+    isMaskInverted,
     past,
     future,
   } = useFreeCanvasStore(
@@ -124,6 +128,7 @@ export function FreeCanvasViewport() {
       selectCard: state.selectCard,
       arrangeCards: state.arrangeCards,
       maskStrokes: state.maskStrokes,
+      isMaskInverted: state.isMaskInverted,
       past: state.past,
       future: state.future,
     }))
@@ -262,23 +267,92 @@ export function FreeCanvasViewport() {
   const previousCountRef = useRef(cards.length);
   useEffect(() => {
     const previous = previousCountRef.current;
-    previousCountRef.current = cards.length;
     if (previous === 0 && cards.length > 0) {
-      markInitialFitDone();
-      const frame = requestAnimationFrame(() => fitAll());
-      return () => cancelAnimationFrame(frame);
+      let inner = 0;
+      const frame = requestAnimationFrame(() => {
+        inner = requestAnimationFrame(() => {
+          previousCountRef.current = cards.length;
+          markInitialFitDone();
+          fitAll();
+        });
+      });
+      return () => {
+        cancelAnimationFrame(frame);
+        if (inner) cancelAnimationFrame(inner);
+      };
     }
+    previousCountRef.current = cards.length;
   }, [cards.length, fitAll, markInitialFitDone]);
 
-  // Initial framing happens once, after persisted assets are restored.
+  // Initial framing happens once, after persisted assets are restored. A
+  // return to the canvas with a default viewport (zoom/pan are not persisted)
+  // still refits even though `initialFitDone` lives for the store's lifetime;
+  // a custom viewport is left alone.
   useEffect(() => {
     if (!isHydrated || didInitialFitRef.current) return;
-    didInitialFitRef.current = true;
-    if (initialFitDone || cards.length === 0) return;
+    if (cards.length === 0) return;
+    const defaultViewport =
+      Math.abs(zoom - 1) < 0.001 && pan.x === 0 && pan.y === 0;
+    // Narrow layouts refit on mount even if a desktop visit framed the canvas
+    // earlier: otherwise the 720px main card and its menu sit off-screen.
+    const narrowViewport =
+      (containerRef.current?.clientWidth ?? window.innerWidth) < 640;
+    if (initialFitDone && !defaultViewport && !narrowViewport) {
+      didInitialFitRef.current = true;
+      return;
+    }
     markInitialFitDone();
-    const frame = requestAnimationFrame(() => fitAll());
-    return () => cancelAnimationFrame(frame);
-  }, [isHydrated, initialFitDone, cards.length, fitAll, markInitialFitDone]);
+    // React StrictMode runs effects twice (the first cleanup would otherwise
+    // cancel the only frame). Mark the fit only after the second frame runs.
+    let inner = 0;
+    const frame = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        didInitialFitRef.current = true;
+        fitAll();
+      });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      if (inner) cancelAnimationFrame(inner);
+    };
+  }, [
+    isHydrated,
+    initialFitDone,
+    cards.length,
+    fitAll,
+    markInitialFitDone,
+    pan.x,
+    pan.y,
+    zoom,
+  ]);
+
+  // A gallery "load as main" happens on another route, so there is no bridge
+  // caller to frame the demoted old main. The gallery passes this state flag.
+  const fitAfterMainSwitch = Boolean(
+    (location.state as { fitAfterMainSwitch?: boolean } | null)
+      ?.fitAfterMainSwitch
+  );
+  useEffect(() => {
+    if (!fitAfterMainSwitch || !isHydrated || cards.length === 0) return;
+    let inner = 0;
+    const frame = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        fitAll();
+        navigate(location.pathname, { replace: true, state: null });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      if (inner) cancelAnimationFrame(inner);
+    };
+  }, [
+    cards.length,
+    fitAll,
+    fitAfterMainSwitch,
+    isHydrated,
+    location.pathname,
+    navigate,
+  ]);
 
   // The bottom command bar grows with reference pills and advanced params.
   // Keep the vertical viewport dock above it instead of letting them overlap.
@@ -768,7 +842,7 @@ export function FreeCanvasViewport() {
         open={confirmMainDeleteOpen}
         title={t("freeCanvas.cards.clearMainDeleteTitle")}
         description={
-          maskStrokes.length > 0
+          maskStrokes.length > 0 || isMaskInverted
             ? t("freeCanvas.cards.discardMaskDesc")
             : t("freeCanvas.cards.clearMainDeleteDesc")
         }

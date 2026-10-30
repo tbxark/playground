@@ -37,6 +37,8 @@ export type CardSizing = {
   naturalHeight?: number;
   saveStatus?: string;
   galleryNanoid?: string;
+  /** Result ownership survives a main → free demotion. */
+  ownsResult?: boolean;
   x?: number;
   y?: number;
 };
@@ -69,11 +71,11 @@ export function cardImageHeight(card: CardSizing): number {
 export function cardWorldHeight(card: CardSizing): number {
   // Only unsaved result cards render the save/retry bar below the image, so
   // saved and canvas-only results must not reserve its height (or rows gain a
-  // 32px hole).
+  // 32px hole). A result demoted to a free card keeps the same bar.
   const saveStatus =
     card.saveStatus ?? (card.galleryNanoid ? "saved" : "failed");
   const extra =
-    card.role === "result" &&
+    (card.role === "result" || card.ownsResult) &&
     saveStatus !== "saved" &&
     saveStatus !== "local"
       ? 32

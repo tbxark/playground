@@ -29,12 +29,17 @@ import { ConfirmDialog } from "../ui/confirm-dialog";
 import { CanvasContextMenu } from "../Canvas/CanvasContextMenu";
 import { CanvasMenuItem } from "../Canvas/CanvasChrome";
 import { useQueueStore } from "../../stores/useQueueStore";
-import { useFreeCanvasStore } from "../../stores/useFreeCanvasStore";
+import {
+  CanvasCard as Card,
+  isSameImage,
+  useFreeCanvasStore,
+} from "../../stores/useFreeCanvasStore";
 import { useLightboxStore } from "../../stores/useLightboxStore";
 import { useConfigStore } from "../../stores/useConfigStore";
 import { useCardEdit } from "../../hooks/useCardEdit";
+import { useSimpleEdit } from "../../hooks/useSimpleEdit";
 import { useFreeCanvasBridge } from "./FreeCanvasBridge";
-import { downloadFile } from "../../utils/file";
+import { downloadFile, dataUrlToBlob } from "../../utils/file";
 import * as cardSource from "../../utils/cardSource";
 import { GenerationResult } from "../../services/types";
 import { cn } from "@/utils/cn";
@@ -55,9 +60,22 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
   const bridge = useFreeCanvasBridge();
   const openLightbox = useLightboxStore((state) => state.open);
   const { buildEditable } = useCardEdit();
+  const { buildResultEditable, applyBlobAsBase, canAddReference } =
+    useSimpleEdit();
+  const simpleInputCount = useFreeCanvasStore(
+    (state) => state.simpleImages.length
+  );
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [pendingPromoteId, setPendingPromoteId] = useState<string | null>(null);
+  const [pendingPromote, setPendingPromote] = useState<{
+    cardId: string;
+    maskVersion: number;
+  } | null>(null);
+  const [pendingBase, setPendingBase] = useState<{
+    blob: Blob;
+    name: string;
+  } | null>(null);
+  const [isApplyingBase, setIsApplyingBase] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   // Per-card overflow menu: the result row only has room for four icon buttons
   // at this width, so the canvas-only actions live in one labelled menu.
@@ -105,7 +123,6 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
     addResultAsReference,
     promoteToMain,
     retrySaveCard,
-    maskStrokes,
     selectCard,
     isCommittingMain,
   } = useFreeCanvasStore(
@@ -115,7 +132,6 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
       addResultAsReference: state.addResultAsReference,
       promoteToMain: state.promoteToMain,
       retrySaveCard: state.retrySaveCard,
-      maskStrokes: state.maskStrokes,
       selectCard: state.selectCard,
       isCommittingMain: state.isCommittingMain,
     }))
@@ -146,7 +162,7 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
       ),
     [taskIds, unsavedCards]
   );
-  const displayCount = totalCount + (isCanvas ? orphanUnsavedCards.length : 0);
+  const displayCount = totalCount + orphanUnsavedCards.length;
   // The header only has room for the total; running and failed counts are
   // carried by the badge tone and its tooltip instead of two extra chips that
   // used to squeeze the panel title into an ellipsis.
@@ -165,14 +181,19 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
   const cardByNanoid = useMemo(() => {
     const map = new Map<string, string>();
     cards.forEach((card) => {
-      // Reference cards can share a gallery id with the result they came from;
-      // this map only tracks the result cards a completed task produced.
-      if (card.role !== "result") return;
+      // Result identity is owned by one card and survives role changes; a
+      // reference copy shares the nanoid but is not the result.
+      if (!card.ownsResult) return;
       if (card.nanoid) map.set(card.nanoid, card.id);
       if (card.galleryNanoid) map.set(card.galleryNanoid, card.id);
     });
     return map;
   }, [cards]);
+
+  const cardById = useMemo(
+    () => new Map(cards.map((card) => [card.id, card])),
+    [cards]
+  );
 
   const cardStatusById = useMemo(
     () => new Map(cards.map((card) => [card.id, card.saveStatus])),
@@ -206,38 +227,105 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
     const existing = cardByNanoid.get(result.nanoid);
     if (existing) return existing;
     // An explicit dock action may bring back a result the user removed earlier.
-    return addResultCard(result, task.id, { restoreDismissed: true });
+    // It is a user edit, so it must be undoable (automatic ingestion is not).
+    return addResultCard(result, task.id, {
+      restoreDismissed: true,
+      recordHistory: true,
+    });
+  };
+
+  const resultName = (result: GenerationResult) =>
+    result.prompt || t("freeCanvas.resultName", { id: result.nanoid });
+
+  const resolveResultBlob = async (result: GenerationResult) => {
+    if (result.blob) return result.blob;
+    if (cardSource.isDataUrl(result.url)) return dataUrlToBlob(result.url);
+    const { corsProxy, corsProxyMode } = useConfigStore.getState();
+    return cardSource.resolveCardBlob(
+      { url: result.url },
+      corsProxy,
+      corsProxyMode
+    );
+  };
+
+  const openSimpleResult = (
+    result: GenerationResult,
+    initialMode: "view" | "edit"
+  ) => {
+    const name = resultName(result);
+    // Prefer the in-memory Blob: provider URLs can expire, and the workspace
+    // must be able to read the pixels for editing. The viewer owns this URL.
+    const url = result.blob
+      ? URL.createObjectURL(result.blob)
+      : result.url;
+    openLightbox({
+      url,
+      title: name,
+      subtitle: `${result.model} · ${result.size}`,
+      fileName: `playground_${result.nanoid}.png`,
+      initialMode,
+      revokeOnClose: Boolean(result.blob),
+      editable: buildResultEditable({
+        name,
+        hasInput: simpleInputCount > 0,
+        allowReference:
+          simpleInputCount > 0 && canAddReference(simpleInputCount),
+      }),
+    });
+    setIsMobileOpen(false);
   };
 
   const handleOpenLarge = async (task: (typeof completedTasks)[number]) => {
     const result = task.result!;
-    if (isCanvas) {
-      const cardId = await ensureCard(task);
-      if (cardId) selectCard(cardId);
+    if (!isCanvas) {
+      openSimpleResult(result, "view");
+      return;
     }
+    const cardId = await ensureCard(task);
+    if (cardId) selectCard(cardId);
+    const card = cardId
+      ? useFreeCanvasStore.getState().cards.find((item) => item.id === cardId)
+      : undefined;
     openLightbox({
-      url: result.url,
-      title: result.prompt || t("freeCanvas.resultName", { id: result.nanoid }),
+      url: card?.url || result.url,
+      title: card?.name || resultName(result),
       subtitle: `${result.model} · ${result.size}`,
-      fileName: `playground_${result.nanoid}.png`,
+      compareSrc: card?.originalUrl,
+      fileName: `playground_${card?.nanoid || result.nanoid}.png`,
     });
     setIsMobileOpen(false);
   };
 
   const handleEdit = async (task: (typeof completedTasks)[number]) => {
     const result = task.result!;
+    if (!isCanvas) {
+      openSimpleResult(result, "edit");
+      return;
+    }
     const cardId = await ensureCard(task);
     if (!cardId) return;
     selectCard(cardId);
-    const name =
-      result.prompt || t("freeCanvas.resultName", { id: result.nanoid });
+    const state = useFreeCanvasStore.getState();
+    const card = state.cards.find((item) => item.id === cardId);
+    if (!card) return;
+    const isMain = card.role === "main";
+    const maskActive = state.maskStrokes.length > 0 || state.isMaskInverted;
     openLightbox({
-      url: result.url,
-      title: name,
+      // Use the card's current bitmap, not the queue's original: promoting or
+      // editing a result must continue from the visible/committed version.
+      url: card.url || result.url,
+      title: card.name || resultName(result),
       subtitle: `${result.model} · ${result.size}`,
-      fileName: `playground_${result.nanoid}.png`,
+      compareSrc: card.originalUrl,
+      fileName: `playground_${card.nanoid || result.nanoid}.png`,
       initialMode: "edit",
-      editable: buildEditable({ cardId, name }),
+      editable: buildEditable({
+        cardId,
+        name: card.name,
+        isMain,
+        discardWarning: isMain && maskActive,
+        maskVersion: isMain ? state.maskVersion : undefined,
+      }),
     });
     setIsMobileOpen(false);
   };
@@ -245,19 +333,77 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
   const handleSetMain = async (task: (typeof completedTasks)[number]) => {
     const cardId = await ensureCard(task);
     if (!cardId) return;
-    if (maskStrokes.length > 0) {
-      setPendingPromoteId(cardId);
+    const state = useFreeCanvasStore.getState();
+    const target = state.cards.find((card) => card.id === cardId);
+    const main = state.cards.find((card) => card.role === "main");
+    if (target && main && (target.id === main.id || isSameImage(target, main))) {
+      bridge?.focusCard(main.id);
       return;
     }
+    if (state.maskStrokes.length > 0 || state.isMaskInverted) {
+      setPendingPromote({ cardId, maskVersion: state.maskVersion });
+      return;
+    }
+    const previousMainId = main?.id;
     const ok = await promoteToMain(cardId, { discardMask: false });
-    if (ok) bridge?.focusCard(cardId);
+    if (ok) {
+      bridge?.focusCards(
+        [cardId, previousMainId].filter(
+          (id): id is string => Boolean(id)
+        )
+      );
+    }
   };
 
   const handleConfirmPromote = async () => {
-    if (!pendingPromoteId) return;
-    const ok = await promoteToMain(pendingPromoteId, { discardMask: true });
-    if (ok) bridge?.focusCard(pendingPromoteId);
-    setPendingPromoteId(null);
+    if (!pendingPromote) return;
+    const previousMainId = useFreeCanvasStore
+      .getState()
+      .cards.find((card) => card.role === "main")?.id;
+    const ok = await promoteToMain(pendingPromote.cardId, {
+      discardMask: true,
+      maskVersion: pendingPromote.maskVersion,
+    });
+    if (ok) {
+      bridge?.focusCards(
+        [pendingPromote.cardId, previousMainId].filter(
+          (id): id is string => Boolean(id)
+        )
+      );
+    }
+    setPendingPromote(null);
+  };
+
+  const handleUseAsBase = async (task: (typeof completedTasks)[number]) => {
+    const result = task.result!;
+    setBusyId(task.id);
+    try {
+      const blob = await resolveResultBlob(result);
+      if (!blob) {
+        toast.error(t("simple.useBaseFailed"));
+        return;
+      }
+      const name = resultName(result);
+      if (useFreeCanvasStore.getState().simpleImages.length > 0) {
+        setPendingBase({ blob, name });
+        return;
+      }
+      await applyBlobAsBase({ blob, name });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleConfirmBase = async () => {
+    if (!pendingBase || isApplyingBase) return;
+    const pending = pendingBase;
+    setIsApplyingBase(true);
+    try {
+      const ok = await applyBlobAsBase(pending);
+      if (ok) setPendingBase(null);
+    } finally {
+      setIsApplyingBase(false);
+    }
   };
 
   // "Show on canvas" and "Add to canvas" are one action: ensureCard brings a
@@ -282,8 +428,9 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
     setBusyId(task.id);
     const result = task.result!;
     // Retrying the save must not resurrect a card the user removed; save the
-    // queue result directly in that case.
-    const cardId = cardByNanoid.get(result.nanoid);
+    // queue result directly in that case. Simple mode always saves the queue
+    // result it displays, never a canvas card edited on another surface.
+    const cardId = isCanvas ? cardByNanoid.get(result.nanoid) : undefined;
     if (cardId) {
       await retrySaveCard(cardId);
     } else {
@@ -311,17 +458,24 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
     }
   };
 
-  const handleDownloadResult = async (result: GenerationResult) => {
+  const handleDownloadResult = async (result: GenerationResult, card?: Card) => {
     try {
-      let blob = result.blob;
+      let blob: Blob | null | undefined = result.blob;
+      if (card) {
+        const { corsProxy, corsProxyMode } = useConfigStore.getState();
+        blob = await cardSource.resolveCardBlob(
+          card,
+          corsProxy,
+          corsProxyMode
+        );
+      }
       if (!blob) {
         const { corsProxy, corsProxyMode } = useConfigStore.getState();
-        blob =
-          (await cardSource.resolveCardBlob(
-            { url: result.url },
-            corsProxy,
-            corsProxyMode
-          )) ?? undefined;
+        blob = await cardSource.resolveCardBlob(
+          { url: result.url },
+          corsProxy,
+          corsProxyMode
+        );
       }
       // Cross-origin URLs cannot be saved with <a download>; surface an error
       // instead of navigating the tab away and losing unsaved state.
@@ -558,9 +712,11 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                 </div>
               ))}
 
-              {isCanvas && orphanUnsavedCards.length > 0 && (
+              {orphanUnsavedCards.length > 0 && (
                 // A quiet section instead of a warning box: the amber only
                 // marks the status line, so it reads as part of the same list.
+                // Shown on both variants so a Simple result that survived only
+                // as a canvas card (queue cleared/refreshed) is still reachable.
                 <section className="space-y-1">
                   <div className="flex items-center gap-1.5 px-1 text-[10px] font-medium text-amber-300/80">
                     <SaveIcon className="size-3 shrink-0" />
@@ -571,110 +727,145 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                       {orphanUnsavedCards.length}
                     </span>
                   </div>
-                  {orphanUnsavedCards.map((card) => (
-                    <div
-                      key={`unsaved-${card.id}`}
-                      className="flex items-center gap-2 rounded-lg border border-amber-400/20 bg-amber-500/[0.04] px-2 py-1.5"
-                    >
-                      <button
-                        type="button"
-                        className="size-9 shrink-0 overflow-hidden rounded-md bg-zinc-900 transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                        onClick={() => {
-                          selectCard(card.id);
-                          if (card.url) {
+                  {orphanUnsavedCards.map((card) => {
+                    // A restored "saving" card has no queue task left to finish
+                    // its write; it must offer a working retry instead of
+                    // spinning forever.
+                    const interrupted = card.saveStatus === "saving";
+                    const status = interrupted ? "failed" : card.saveStatus;
+                    return (
+                      <div
+                        key={`unsaved-${card.id}`}
+                        className="flex items-center gap-2 rounded-lg border border-amber-400/20 bg-amber-500/[0.04] px-2 py-1.5"
+                      >
+                        <button
+                          type="button"
+                          className="size-9 shrink-0 overflow-hidden rounded-md bg-zinc-900 transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                          onClick={() => {
+                            if (isCanvas) selectCard(card.id);
+                            if (!card.url) return;
+                            const state = useFreeCanvasStore.getState();
+                            const isMain = card.role === "main";
+                            const maskActive =
+                              state.maskStrokes.length > 0 ||
+                              state.isMaskInverted;
                             openLightbox({
                               url: card.url,
                               title: card.name,
                               subtitle: t("freeCanvas.cards.resultBadge"),
                               fileName: `playground_${card.nanoid || card.id}.png`,
-                              editable: buildEditable({
-                                cardId: card.id,
-                                name: card.name,
-                                allowCopy: true,
-                              }),
+                              editable: isCanvas
+                                ? buildEditable({
+                                    cardId: card.id,
+                                    name: card.name,
+                                    allowCopy: true,
+                                    isMain,
+                                    discardWarning: isMain && maskActive,
+                                    maskVersion: isMain
+                                      ? state.maskVersion
+                                      : undefined,
+                                  })
+                                : buildResultEditable({
+                                    name: card.name,
+                                    hasInput: simpleInputCount > 0,
+                                    allowReference:
+                                      simpleInputCount > 0 &&
+                                      canAddReference(simpleInputCount),
+                                  }),
                             });
-                          }
-                        }}
-                        aria-label={t("freeCanvas.cards.openLargeAria", {
-                          name: card.name,
-                        })}
-                      >
-                        {card.url ? (
-                          <img
-                            src={card.url}
-                            alt={card.name}
-                            className="size-full object-cover"
-                          />
-                        ) : null}
-                      </button>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[10px] text-zinc-300">
-                          {card.prompt || t("freeCanvas.noPrompt")}
-                        </p>
-                        <p
-                          className="truncate text-[10px] text-amber-300/80"
-                          title={card.saveError || undefined}
+                          }}
+                          aria-label={t("freeCanvas.cards.openLargeAria", {
+                            name: card.name,
+                          })}
                         >
-                          {card.saveStatus === "unavailable"
-                            ? t("freeCanvas.cards.cannotRetrySave")
-                            : card.saveError ||
-                              renderSaveLabel(card.saveStatus)}
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="xs"
-                        disabled={
-                          card.saveStatus === "unavailable" ||
-                          card.saveStatus === "saving" ||
-                          (!card.url && !card.galleryNanoid) ||
-                          busyId === card.id
-                        }
-                        onClick={() => {
-                          void (async () => {
-                            setBusyId(card.id);
-                            await retrySaveCard(card.id);
-                            setBusyId(null);
-                          })();
-                        }}
-                        className="h-6 shrink-0 cursor-pointer px-1.5 text-[10px] font-normal text-primary"
-                        title={t("freeCanvas.cards.retrySave")}
-                      >
-                        {busyId === card.id ||
-                        card.saveStatus === "saving" ? (
-                          <Loader2Icon className="size-3 animate-spin" />
-                        ) : (
-                          t("freeCanvas.cards.retrySave")
+                          {card.url ? (
+                            <img
+                              src={card.url}
+                              alt={card.name}
+                              className="size-full object-cover"
+                            />
+                          ) : null}
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[10px] text-zinc-300">
+                            {card.prompt || t("freeCanvas.noPrompt")}
+                          </p>
+                          <p
+                            className="truncate text-[10px] text-amber-300/80"
+                            title={card.saveError || undefined}
+                          >
+                            {status === "unavailable"
+                              ? t("freeCanvas.cards.cannotRetrySave")
+                              : card.saveError ||
+                                (interrupted
+                                  ? t("freeCanvas.cards.saveInterrupted")
+                                  : renderSaveLabel(status))}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          disabled={
+                            card.saveStatus === "unavailable" ||
+                            (!card.url && !card.galleryNanoid) ||
+                            busyId === card.id
+                          }
+                          onClick={() => {
+                            void (async () => {
+                              setBusyId(card.id);
+                              await retrySaveCard(card.id);
+                              setBusyId(null);
+                            })();
+                          }}
+                          className="h-6 shrink-0 cursor-pointer px-1.5 text-[10px] font-normal text-primary"
+                          title={t("freeCanvas.cards.retrySave")}
+                        >
+                          {busyId === card.id ? (
+                            <Loader2Icon className="size-3 animate-spin" />
+                          ) : (
+                            t("freeCanvas.cards.retrySave")
+                          )}
+                        </Button>
+                        {isCanvas && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-xs"
+                            className="cursor-pointer text-zinc-500 hover:text-white"
+                            title={t("freeCanvas.cards.locateLatest")}
+                            aria-label={t("freeCanvas.cards.locateLatest")}
+                            onClick={() => {
+                              selectCard(card.id);
+                              bridge?.focusCard(card.id);
+                            }}
+                          >
+                            <LocateFixedIcon />
+                          </Button>
                         )}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-xs"
-                        className="cursor-pointer text-zinc-500 hover:text-white"
-                        title={t("freeCanvas.cards.locateLatest")}
-                        aria-label={t("freeCanvas.cards.locateLatest")}
-                        onClick={() => {
-                          selectCard(card.id);
-                          bridge?.focusCard(card.id);
-                        }}
-                      >
-                        <LocateFixedIcon />
-                      </Button>
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
                 </section>
               )}
 
               {completedTasks.map((task) => {
                 const result = task.result!;
                 const cardId = cardByNanoid.get(result.nanoid);
+                const ownedCard = cardId ? cardById.get(cardId) : undefined;
+                // Simple mode is its own surface: its row must always describe
+                // the queue result, never a canvas card that was edited later.
+                const displayUrl = isCanvas
+                  ? ownedCard?.url || result.url
+                  : result.url;
+                const displayName =
+                  (isCanvas ? ownedCard?.name : undefined) || resultName(result);
                 const isSelected =
                   isCanvas && cardId != null && cardId === selectedCardId;
                 const saveStatus =
-                  (cardId != null ? cardStatusById.get(cardId) : undefined) ??
-                  result.gallerySaveStatus;
+                  (isCanvas && cardId != null
+                    ? cardStatusById.get(cardId)
+                    : undefined) ?? result.gallerySaveStatus;
                 const canRetry =
                   saveStatus !== "saved" &&
                   saveStatus !== "saving" &&
@@ -706,12 +897,12 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                         type="button"
                         onClick={() => void handleOpenLarge(task)}
                         aria-label={t("freeCanvas.cards.openLargeAria", {
-                          name: result.prompt || result.nanoid,
+                          name: displayName,
                         })}
                         className="relative aspect-square w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
                       >
                         <img
-                          src={result.url}
+                          src={displayUrl}
                           alt={
                             result.prompt || t("freeCanvas.generatedResultAlt")
                           }
@@ -804,13 +995,50 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                               </Button>
                             </>
                           )}
+                          {!isCanvas && (
+                            <>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-xs"
+                                title={t("preview.edit.action")}
+                                aria-label={t("preview.edit.action")}
+                                disabled={busyId === task.id}
+                                onClick={() => void handleEdit(task)}
+                                className="cursor-pointer text-zinc-300 hover:text-white"
+                              >
+                                <PencilIcon />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-xs"
+                                title={t("simple.useAsBase")}
+                                aria-label={t("simple.useAsBase")}
+                                disabled={busyId === task.id}
+                                onClick={() => void handleUseAsBase(task)}
+                                className="cursor-pointer text-primary hover:text-primary"
+                              >
+                                {busyId === task.id ? (
+                                  <Loader2Icon className="animate-spin" />
+                                ) : (
+                                  <SparklesIcon />
+                                )}
+                              </Button>
+                            </>
+                          )}
                           <Button
                             type="button"
                             variant="ghost"
                             size="icon-xs"
                             title={t("freeCanvas.downloadOriginal")}
                             aria-label={t("freeCanvas.downloadOriginal")}
-                            onClick={() => void handleDownloadResult(result)}
+                            onClick={() =>
+                              void handleDownloadResult(
+                                result,
+                                isCanvas ? ownedCard : undefined
+                              )
+                            }
                             className="cursor-pointer text-zinc-300 hover:text-white"
                           >
                             <DownloadIcon />
@@ -883,11 +1111,27 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
                 <div className="flex min-h-40 flex-col items-center justify-center gap-1.5 px-6 text-center">
                   <HistoryIcon className="size-5 text-zinc-600" />
                   <p className="text-xs text-zinc-400">
-                    {t("freeCanvas.noResults")}
+                    {isCanvas
+                      ? t("freeCanvas.noResults")
+                      : t("simple.noResultsTitle")}
                   </p>
                   <p className="text-[10px] leading-relaxed text-zinc-500">
-                    {t("freeCanvas.noResultsHint")}
+                    {isCanvas
+                      ? t("freeCanvas.noResultsHint")
+                      : t("simple.noResultsHint")}
                   </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    onClick={() => navigate("/gallery")}
+                    className="mt-1 gap-1 border-white/15 bg-transparent text-[10px] text-zinc-300 hover:bg-white/10 hover:text-white"
+                  >
+                    <ImagesIcon className="size-3" />
+                    {isCanvas
+                      ? t("freeCanvas.openGallery")
+                      : t("simple.openGallery")}
+                  </Button>
                 </div>
               )}
             </div>
@@ -896,13 +1140,25 @@ export function ResultsDock({ variant = "canvas" }: ResultsDockProps) {
       </aside>
 
       <ConfirmDialog
-        open={Boolean(pendingPromoteId)}
+        open={Boolean(pendingPromote)}
         title={t("freeCanvas.cards.discardMaskTitle")}
         description={t("freeCanvas.cards.discardMaskDesc")}
         confirmLabel={t("freeCanvas.cards.discardMaskConfirm")}
         busy={isCommittingMain}
-        onCancel={() => setPendingPromoteId(null)}
+        onCancel={() => setPendingPromote(null)}
         onConfirm={() => void handleConfirmPromote()}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingBase)}
+        title={t("simple.replaceBaseTitle")}
+        description={t("simple.replaceBaseDesc")}
+        confirmLabel={t("simple.replaceBaseConfirm")}
+        busy={isApplyingBase}
+        onCancel={() => {
+          if (!isApplyingBase) setPendingBase(null);
+        }}
+        onConfirm={() => void handleConfirmBase()}
       />
     </>
   );

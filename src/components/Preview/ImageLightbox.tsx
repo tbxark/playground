@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent } from "../ui/dialog";
 import { useLightboxStore } from "../../stores/useLightboxStore";
+import { retireObjectUrl } from "../../utils/cardSource";
 import { ImageWorkspace } from "./ImageWorkspace";
 
 /**
@@ -19,6 +20,15 @@ export function ImageLightbox() {
   useEffect(() => {
     if (!isOpen) setDirty(false);
   }, [isOpen]);
+
+  // A transient URL (created from a queue result Blob) belongs to this viewer.
+  // The workspace leases the same URL while it is mounted, so retiring here
+  // cannot break an in-flight edit.
+  useEffect(() => {
+    const current = images[index];
+    if (!isOpen || !current?.revokeOnClose) return;
+    return () => retireObjectUrl(current.url);
+  }, [images, index, isOpen]);
 
   if (!image) return null;
 

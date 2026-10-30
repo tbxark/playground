@@ -213,7 +213,7 @@ export function FreeCanvasToolbar() {
     );
   }
 
-  const hasMask = maskStrokes.length > 0;
+  const hasMask = maskStrokes.length > 0 || isMaskInverted;
 
   const handleSendToWorkflow = async () => {
     const imageUrl = await exportMainImage();

@@ -16,6 +16,11 @@ const (
 	managedGeneratePath  = "/api/generate"
 	managedTaskPrefix    = "/api/tasks/"
 	managedAssistantPath = "/api/assistant/chat"
+
+	// Shared with the Hono implementation (shared/contracts.ts): the official
+	// upstream cannot accept image inputs through /images/generations, and this
+	// facade does not implement /images/edits.
+	errorImageInputUnsupported = "image_input_unsupported"
 )
 
 type managedConfigResponse struct {
@@ -140,6 +145,12 @@ func handleManagedGenerate(w http.ResponseWriter, r *http.Request, cfg config, c
 	}
 
 	official := isOfficialOpenAIBase(target.baseURL.String())
+	if official && (len(body.ImageURLs) > 0 || body.MaskURL != "") {
+		// Do not forward a text-only request: the caller asked for images and
+		// would be billed for something else.
+		writeError(w, http.StatusBadRequest, errorImageInputUnsupported)
+		return
+	}
 	payload := map[string]any{
 		"model":  body.Model,
 		"prompt": body.Prompt,

@@ -22,6 +22,7 @@ import { GenerationResult } from "../services/types";
 import * as cardSource from "../utils/cardSource";
 import {
   CARD_WORLD_WIDTH,
+  cardWidth,
   cardWorldHeight,
   clampCardWidth,
   layoutCards,
@@ -71,6 +72,8 @@ export type CardEditInput = {
   name?: string;
   /** The bitmap geometry changed, so a pending inpaint mask no longer lines up. */
   clearMask?: boolean;
+  /** Mask revision the confirmation was shown for (stale edits are rejected). */
+  maskVersion?: number;
 };
 
 export type ResultMeta = {
@@ -108,6 +111,8 @@ export type CanvasCard = {
   /** Pre-edit snapshot used for before/after comparison after a reload. */
   originalAssetKey?: string;
   galleryNanoid?: string;
+  /** Gallery record holding a saved *edited* bitmap (never the original). */
+  editedGalleryNanoid?: string;
   nanoid?: string;
   resultTaskId?: string;
   prompt?: string;
@@ -116,6 +121,19 @@ export type CanvasCard = {
   resultMeta?: ResultMeta;
   assetState: CanvasAssetState;
   isEdited?: boolean;
+  /**
+   * The one card that owns a generation result. It survives role changes
+   * (main → free), so result identity never depends on the current card role.
+   */
+  ownsResult?: boolean;
+  /**
+   * "memory" means the bitmap could not be written to IndexedDB and only lives
+   * for this session. A reload shows an explicit missing/session-only state
+   * instead of pretending the bytes were persisted.
+   */
+  persist?: "asset" | "memory";
+  /** Session arrival watermark for automatic result ingestion. */
+  ingestSeq?: number;
 };
 
 export type AddFilesResult = {
@@ -139,6 +157,24 @@ export type SimpleImage = {
   persist?: "asset" | "memory";
   /** Restored from persistence but the IndexedDB asset is gone. */
   missing?: boolean;
+  /** Hydration could not read IndexedDB; retry instead of deleting the entry. */
+  restoreError?: boolean;
+  /** In-session version, bumped by every replacement (stale edits are rejected). */
+  revision?: number;
+};
+
+export type SimpleImageEditTarget = {
+  id: string;
+  assetKey?: string;
+  revision?: number;
+};
+
+export type SimpleImageRequest = {
+  total: number;
+  /** Resolved request value per visible slot, in display order. */
+  slots: Array<{ id: string; index: number; url: string | null }>;
+  /** Deduped values actually sent, in display order. */
+  urls: string[];
 };
 
 type EditingState = {
@@ -164,6 +200,10 @@ export type CanvasEditingSnapshot = {
 export type FreeCanvasHistorySnapshot = {
   cards: CanvasCard[];
   editing: CanvasEditingSnapshot;
+  /** Result nanoids dismissed at snapshot time (undo restores/removes them). */
+  dismissedResultNanoids: string[];
+  /** Automatic result-ingestion watermark at snapshot time. */
+  ingestSeq: number;
 };
 
 export const FREE_CANVAS_HISTORY_LIMIT = 30;
@@ -174,8 +214,15 @@ type FreeCanvasState = EditingState & {
   activeTool: CanvasTool;
   isCommittingMain: boolean;
   isHydrated: boolean;
+  /** IndexedDB did not respond for at least one asset; retry before removal. */
+  hydrationError: boolean;
+  retryHydrateAssets: () => Promise<void>;
   initialFitDone: boolean;
   markInitialFitDone: () => void;
+  /** Bumped by every mask mutation; async switches reject stale confirmations. */
+  maskVersion: number;
+  /** Automatic result-ingestion counter (session-only, like undo history). */
+  resultIngestSeq: number;
 
   past: FreeCanvasHistorySnapshot[];
   future: FreeCanvasHistorySnapshot[];
@@ -208,6 +255,34 @@ type FreeCanvasState = EditingState & {
   clearSimpleImages: () => void;
   /** Resolve every simple image to a value a provider accepts, in order. */
   resolveSimpleImageUrls: () => Promise<string[]>;
+  /** Slot-aware resolution so callers can detect a skipped base image. */
+  resolveSimpleImageRequest: () => Promise<SimpleImageRequest>;
+  /** Replace one input in place (id/name/order kept) if it is still current. */
+  replaceSimpleImage: (
+    id: string,
+    input: {
+      blob: Blob;
+      width?: number;
+      height?: number;
+      expected?: SimpleImageEditTarget;
+    }
+  ) => Promise<boolean>;
+  /** Make an edited/generated bitmap the base input (replaces slot 0). */
+  setSimpleBaseFromBlob: (input: {
+    blob: Blob;
+    name: string;
+    width?: number;
+    height?: number;
+  }) => Promise<boolean>;
+  /** Append a bitmap as a reference input; false when the five slots are full. */
+  addSimpleReferenceFromBlob: (input: {
+    blob: Blob;
+    name: string;
+    width?: number;
+    height?: number;
+  }) => Promise<boolean>;
+  /** Remove entries whose asset/source is gone (explicit user exit). */
+  removeUnavailableSimpleImages: () => number;
 
   addFiles: (
     files: FileList | File[],
@@ -225,7 +300,13 @@ type FreeCanvasState = EditingState & {
   addResultCard: (
     result: GenerationResult,
     taskId?: string,
-    options?: { restoreDismissed?: boolean }
+    options?: {
+      restoreDismissed?: boolean;
+      /** Automatic ingestion: keep after undo via the session watermark. */
+      ingest?: boolean;
+      /** Explicit dock action: this add is a user edit and is undoable. */
+      recordHistory?: boolean;
+    }
   ) => Promise<string | null>;
   addResultAsReference: (result: GenerationResult) => Promise<string | null>;
   /** Add a local (never gallery-saved) output as a result card. */
@@ -242,12 +323,17 @@ type FreeCanvasState = EditingState & {
     prompt?: string;
     createdAt?: number;
     discardMask?: boolean;
+    /** Mask revision the user actually confirmed. */
+    maskVersion?: number;
   }) => Promise<boolean>;
   promoteToMain: (
     id: string,
-    options?: { discardMask?: boolean }
+    options?: { discardMask?: boolean; maskVersion?: number }
   ) => Promise<boolean>;
-  clearMain: (options?: { discardMask?: boolean }) => Promise<boolean>;
+  clearMain: (options?: {
+    discardMask?: boolean;
+    maskVersion?: number;
+  }) => Promise<boolean>;
 
   selectCard: (id: string | null) => void;
   moveCard: (id: string, x: number, y: number) => void;
@@ -343,6 +429,43 @@ const RESET_MASK: EditingState = {
   isMaskInverted: false,
 };
 
+function resetMaskState(state: {
+  maskVersion: number;
+}): EditingState & { maskVersion: number } {
+  return { ...RESET_MASK, maskVersion: state.maskVersion + 1 };
+}
+
+function hasPendingMask(state: {
+  maskStrokes: MaskStroke[];
+  isMaskInverted: boolean;
+}): boolean {
+  return state.maskStrokes.length > 0 || state.isMaskInverted;
+}
+
+/**
+ * Returns true when the switch must abort. A confirmation only covers the mask
+ * revision the user actually saw; a stroke drawn while an async switch was
+ * loading invalidates it instead of being silently discarded.
+ */
+function rejectMainSwitchForMask(
+  state: FreeCanvasState,
+  options?: { discardMask?: boolean; maskVersion?: number }
+): boolean {
+  if (!hasPendingMask(state)) return false;
+  if (!options?.discardMask) {
+    toast.warning(i18n.t("freeCanvas.cards.discardMaskTitle"));
+    return true;
+  }
+  if (
+    options.maskVersion !== undefined &&
+    options.maskVersion !== state.maskVersion
+  ) {
+    toast.warning(i18n.t("freeCanvas.cards.maskChanged"));
+    return true;
+  }
+  return false;
+}
+
 function captureEditingSnapshot(state: FreeCanvasState): CanvasEditingSnapshot {
   return {
     maskStrokes: [...state.maskStrokes],
@@ -357,23 +480,28 @@ function captureFreeCanvasSnapshot(
   return {
     cards: [...state.cards],
     editing: captureEditingSnapshot(state),
+    dismissedResultNanoids: [...state.dismissedResultNanoids],
+    ingestSeq: state.resultIngestSeq,
   };
 }
 
 /**
- * Restore the snapshot but keep result cards that arrived after it was taken,
- * so undoing a card drag never deletes a generation that finished meanwhile.
- * Result cards that were already in the snapshot still undo normally.
+ * Restore the snapshot but keep automatically ingested results that arrived
+ * after it was taken, so undoing a card drag never deletes a generation that
+ * finished meanwhile. Explicit adds/removes are ordinary undoable edits; the
+ * watermark is what distinguishes them from queue arrivals.
  */
 function mergeHistoryCards(
-  snapshotCards: CanvasCard[],
+  snapshot: FreeCanvasHistorySnapshot,
   currentCards: CanvasCard[]
 ): CanvasCard[] {
-  const snapshotIds = new Set(snapshotCards.map((card) => card.id));
+  const snapshotIds = new Set(snapshot.cards.map((card) => card.id));
   const newerResults = currentCards.filter(
-    (card) => card.role === "result" && !snapshotIds.has(card.id)
+    (card) =>
+      !snapshotIds.has(card.id) &&
+      (card.ingestSeq ?? 0) > snapshot.ingestSeq
   );
-  return normalizeCards([...snapshotCards, ...newerResults]);
+  return normalizeCards([...snapshot.cards, ...newerResults]);
 }
 
 function nextRefOrder(cards: CanvasCard[]): number {
@@ -425,8 +553,32 @@ function normalizeMainUniqueness(cards: CanvasCard[]): CanvasCard[] {
   });
 }
 
+/**
+ * Legacy cards predate `ownsResult`. Only a generated result card proves
+ * ownership: reference copies share the nanoid but have role "reference", and
+ * canvas-only tool outputs have no generation nanoid.
+ */
+function normalizeResultOwnership(cards: CanvasCard[]): CanvasCard[] {
+  return cards.map((card) => {
+    if (card.ownsResult !== undefined) return card;
+    const generated = card.origin === "generated" && Boolean(card.nanoid);
+    // Legacy shapes: result cards, a result promoted to main before ownership
+    // existed, and a demoted old main (free + resultMeta). A reference copy has
+    // no resultMeta/resultTaskId, so it is never mistaken for the owner even if
+    // it was promoted to main.
+    const owns =
+      generated &&
+      (card.role === "result" ||
+        ((card.role === "main" || card.role === "free") &&
+          Boolean(card.resultMeta || card.resultTaskId)));
+    return owns ? { ...card, ownsResult: true } : card;
+  });
+}
+
 function normalizeCards(cards: CanvasCard[]): CanvasCard[] {
-  return normalizeReferenceOrder(normalizeMainUniqueness(cards));
+  return normalizeResultOwnership(
+    normalizeReferenceOrder(normalizeMainUniqueness(cards))
+  );
 }
 
 function demotedRole(card: CanvasCard): CanvasCardRole {
@@ -435,6 +587,25 @@ function demotedRole(card: CanvasCard): CanvasCardRole {
   return card.origin === "generated" || card.origin === "tool"
     ? "result"
     : "reference";
+}
+
+/**
+ * Replacing the main image is the one demotion that always keeps the old
+ * bitmap as a free (canvas-only) card. Other paths (clear main, duplicate-main
+ * normalization, restore conflicts) keep their historical semantics.
+ */
+function demotedReplacedMain(): CanvasCardRole {
+  return "free";
+}
+
+/** Do two cards show the same source image, regardless of card identity? */
+export function isSameImage(a?: CanvasCard, b?: CanvasCard): boolean {
+  if (!a || !b) return false;
+  if (a.id === b.id) return true;
+  if (a.isEdited || b.isEdited) return false;
+  if (a.galleryNanoid && a.galleryNanoid === b.galleryNanoid) return true;
+  if (a.nanoid && a.nanoid === b.nanoid) return true;
+  return Boolean(a.url && b.url && a.url === b.url);
 }
 
 const DISMISSED_RESULT_LIMIT = 500;
@@ -452,11 +623,25 @@ function addDismissedNanoids(
   return Array.from(next).slice(-DISMISSED_RESULT_LIMIT);
 }
 
+function rectanglesOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number }
+): boolean {
+  return (
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height
+  );
+}
+
 /**
  * Place a newly promoted card at the main slot without re-flowing the whole
- * canvas. Cards the user positioned by hand keep their coordinates; only the
- * new main moves into the old main's slot (or the origin), and the demoted old
- * main steps aside into the results/reference area so the two never stack.
+ * canvas. Cards the user positioned by hand keep their coordinates; the new
+ * main takes the old main's slot and the demoted old main steps aside into the
+ * free area. With no old main, the new main sits at the origin and only cards
+ * that would overlap it are pushed down (otherwise results already start at
+ * y=0 and would be hidden under the new main).
  */
 function settleMainCard(
   cards: CanvasCard[],
@@ -471,24 +656,41 @@ function settleMainCard(
   const mainPosition = demoted
     ? { x: demoted.x, y: demoted.y }
     : { x: 0, y: 0 };
-  const demotedPosition = demoted
-    ? nextCardPosition(
-        [
-          ...cards.filter(
-            (card) => card.id !== demoted.id && card.id !== main.id
-          ),
-          { ...main, x: mainPosition.x, y: mainPosition.y },
-        ],
-        demoted.role
-      )
-    : null;
 
+  if (demoted) {
+    const demotedPosition = nextCardPosition(
+      [
+        ...cards.filter(
+          (card) => card.id !== demoted.id && card.id !== main.id
+        ),
+        { ...main, ...mainPosition },
+      ],
+      demoted.role
+    );
+    return cards.map((card) => {
+      if (card.id === main.id) return { ...card, ...mainPosition };
+      if (card.id === demoted.id) return { ...card, ...demotedPosition };
+      return card;
+    });
+  }
+
+  const placedMain = { ...main, ...mainPosition };
+  const mainRect = {
+    ...mainPosition,
+    width: cardWidth(placedMain),
+    height: cardWorldHeight(placedMain),
+  };
+  const gap = 56;
   return cards.map((card) => {
-    if (card.id === main.id) return { ...card, ...mainPosition };
-    if (demoted && card.id === demoted.id && demotedPosition) {
-      return { ...card, ...demotedPosition };
-    }
-    return card;
+    if (card.id === main.id) return placedMain;
+    const rect = {
+      x: card.x,
+      y: card.y,
+      width: cardWidth(card),
+      height: cardWorldHeight(card),
+    };
+    if (!rectanglesOverlap(rect, mainRect)) return card;
+    return { ...card, y: Math.round(rect.y + mainRect.height + gap) };
   });
 }
 
@@ -544,6 +746,7 @@ function mergeRuntimeCard(target: CanvasCard, source: CanvasCard): CanvasCard {
     assetKey: source.assetKey ?? target.assetKey,
     originalAssetKey: source.originalAssetKey ?? target.originalAssetKey,
     assetState: source.assetState,
+    persist: source.persist ?? target.persist,
     naturalWidth: source.naturalWidth ?? target.naturalWidth,
     naturalHeight: source.naturalHeight ?? target.naturalHeight,
     isEdited: source.isEdited ?? target.isEdited,
@@ -560,6 +763,48 @@ function mergeRuntimeCard(target: CanvasCard, source: CanvasCard): CanvasCard {
  */
 function nextEditAssetKey(cardId: string): string {
   return `card-${cardId}-edit-${Date.now().toString(36)}-${generateNanoid(6)}`;
+}
+
+function nextSimpleAssetKey(id: string): string {
+  return `simple-${id}-edit-${Date.now().toString(36)}-${generateNanoid(6)}`;
+}
+
+type SimpleAssetWrite = {
+  assetKey?: string;
+  persist: "asset" | "memory";
+  url: string;
+};
+
+/**
+ * Store one simple-input bitmap and return the runtime URL. A failed write is
+ * still usable for this session (and is labelled as such), matching uploads.
+ */
+async function writeSimpleAsset(blob: Blob, id: string): Promise<SimpleAssetWrite> {
+  const assetKey = nextSimpleAssetKey(id);
+  try {
+    await putCanvasAsset(assetKey, blob);
+    return { assetKey, persist: "asset", url: URL.createObjectURL(blob) };
+  } catch {
+    toast.warning(i18n.t("simple.persistMemoryHint"), {
+      id: "simple-memory-image",
+    });
+    return { persist: "memory", url: URL.createObjectURL(blob) };
+  }
+}
+
+/**
+ * Simple inputs are mutated by async writes; serialize capacity checks and the
+ * final state update so two imports/edits can never both take the last slot or
+ * overwrite each other's array.
+ */
+let simpleMutation: Promise<unknown> = Promise.resolve();
+function withSimpleMutation<T>(task: () => Promise<T>): Promise<T> {
+  const next = simpleMutation.then(task, task);
+  simpleMutation = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
 }
 
 async function materializeLocalCard(
@@ -598,6 +843,24 @@ async function materializeLocalCard(
     }
   }
 
+  if (card.editedGalleryNanoid) {
+    try {
+      const record = await getHistoryRecordByNanoid(card.editedGalleryNanoid);
+      if (record?.imageBlob) {
+        const dimensions = await loadDimensionsSafe(record.imageBlob);
+        return {
+          ...card,
+          url: URL.createObjectURL(record.imageBlob),
+          assetState: "gallery",
+          naturalWidth: card.naturalWidth ?? dimensions.width,
+          naturalHeight: card.naturalHeight ?? dimensions.height,
+        };
+      }
+    } catch {
+      // fall through
+    }
+  }
+
   if (card.isEdited) {
     // Never silently replace committed edits with the unedited gallery original.
     return { ...card, url: "", assetState: "missing" };
@@ -609,10 +872,14 @@ async function materializeLocalCard(
     return { ...card, url: "", assetState: "missing" };
   }
 
-  const assetKey = card.assetKey ?? `card-${card.id}`;
+  const proposedAssetKey = card.assetKey ?? `card-${card.id}`;
+  let assetKey: string | undefined = proposedAssetKey;
+  let persistMode: CanvasCard["persist"] = "asset";
   try {
-    await putCanvasAsset(assetKey, blob);
+    await putCanvasAsset(proposedAssetKey, blob);
   } catch {
+    assetKey = undefined;
+    persistMode = "memory";
     toast.warning(i18n.t("freeCanvas.cards.assetStoreFailed"), {
       id: "canvas-asset-failed",
     });
@@ -623,6 +890,7 @@ async function materializeLocalCard(
     url: URL.createObjectURL(blob),
     assetKey,
     assetState: "ready",
+    persist: persistMode,
     naturalWidth: card.naturalWidth ?? dimensions.width,
     naturalHeight: card.naturalHeight ?? dimensions.height,
   };
@@ -635,7 +903,10 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
       selectedCardId: null,
       isCommittingMain: false,
       isHydrated: false,
+      hydrationError: false,
       initialFitDone: false,
+      maskVersion: 0,
+      resultIngestSeq: 0,
       ...EMPTY_EDITING,
 
       zoom: 1,
@@ -664,10 +935,12 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         if (state.past.length === 0 || state.isCommittingMain) return false;
         const previous = state.past[state.past.length - 1];
         const current = captureFreeCanvasSnapshot(state);
-        const merged = mergeHistoryCards(previous.cards, state.cards);
+        const merged = mergeHistoryCards(previous, state.cards);
         set({
           cards: merged,
           ...previous.editing,
+          dismissedResultNanoids: previous.dismissedResultNanoids,
+          maskVersion: state.maskVersion + 1,
           past: state.past.slice(0, -1),
           future: [...state.future, current].slice(-FREE_CANVAS_HISTORY_LIMIT),
           selectedCardId: merged.some(
@@ -680,7 +953,8 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         // IndexedDB (or the gallery) instead of showing a broken image.
         merged.forEach((card) => {
           if (!card.url || cardSource.isHttpUrl(card.url)) return;
-          if (!card.assetKey && !card.galleryNanoid) return;
+          if (!card.assetKey && !card.galleryNanoid && !card.editedGalleryNanoid)
+            return;
           void get().rehydrateCard(card.id);
         });
         return true;
@@ -691,10 +965,12 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         if (state.future.length === 0 || state.isCommittingMain) return false;
         const target = state.future[state.future.length - 1];
         const current = captureFreeCanvasSnapshot(state);
-        const merged = mergeHistoryCards(target.cards, state.cards);
+        const merged = mergeHistoryCards(target, state.cards);
         set({
           cards: merged,
           ...target.editing,
+          dismissedResultNanoids: target.dismissedResultNanoids,
+          maskVersion: state.maskVersion + 1,
           past: [...state.past, current].slice(-FREE_CANVAS_HISTORY_LIMIT),
           future: state.future.slice(0, -1),
           selectedCardId: merged.some(
@@ -705,7 +981,8 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         });
         merged.forEach((card) => {
           if (!card.url || cardSource.isHttpUrl(card.url)) return;
-          if (!card.assetKey && !card.galleryNanoid) return;
+          if (!card.assetKey && !card.galleryNanoid && !card.editedGalleryNanoid)
+            return;
           void get().rehydrateCard(card.id);
         });
         return true;
@@ -727,6 +1004,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         set({
           cards: [],
           ...EMPTY_EDITING,
+          maskVersion: state.maskVersion + 1,
           activeTool: "select",
           selectedCardId: null,
           dismissedResultNanoids: addDismissedNanoids(
@@ -739,60 +1017,67 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
 
       simpleImages: [],
 
-      addSimpleImages: async (fileList) => {
-        const files = Array.from(fileList).filter((file) =>
-          file.type.startsWith("image/")
-        );
-        const current = get().simpleImages;
-        if (files.length === 0) {
-          return { added: 0, total: current.length };
-        }
-
-        const room = MAX_SIMPLE_IMAGES - current.length;
-        if (room <= 0) {
-          toast.info(
-            i18n.t("simple.maxImagesHint", { max: MAX_SIMPLE_IMAGES })
+      addSimpleImages: (fileList) =>
+        withSimpleMutation(async () => {
+          const files = Array.from(fileList).filter((file) =>
+            file.type.startsWith("image/")
           );
-          return { added: 0, total: current.length };
-        }
+          if (files.length === 0) {
+            return { added: 0, total: get().simpleImages.length };
+          }
 
-        let added = 0;
-        for (const file of files.slice(0, room)) {
-          const id = `simple-${Date.now()}-${generateNanoid(6)}`;
-          const assetKey = `simple-${id}`;
-          let persistMode: SimpleImage["persist"] = "asset";
-          try {
-            await putCanvasAsset(assetKey, file);
-          } catch {
-            persistMode = "memory";
-            toast.warning(i18n.t("simple.persistMemoryHint"), {
-              id: "simple-memory-image",
+          const room = MAX_SIMPLE_IMAGES - get().simpleImages.length;
+          if (room <= 0) {
+            toast.info(
+              i18n.t("simple.maxImagesHint", { max: MAX_SIMPLE_IMAGES })
+            );
+            return { added: 0, total: get().simpleImages.length };
+          }
+
+          const additions: SimpleImage[] = [];
+          for (const file of files.slice(0, room)) {
+            const id = `simple-${Date.now()}-${generateNanoid(6)}`;
+            const write = await writeSimpleAsset(file, id);
+            additions.push({
+              id,
+              name: file.name,
+              url: write.url,
+              assetKey: write.assetKey,
+              order: 0,
+              persist: write.persist,
+              revision: 0,
             });
           }
-          const url = URL.createObjectURL(file);
-          set((state) => ({
-            simpleImages: reindexSimpleImages([
-              ...state.simpleImages,
-              {
-                id,
-                name: file.name,
-                url,
-                assetKey: persistMode === "asset" ? assetKey : undefined,
-                order: state.simpleImages.length,
-                persist: persistMode,
-              },
-            ]),
-          }));
-          added += 1;
-        }
 
-        if (files.length > room) {
-          toast.info(
-            i18n.t("simple.maxImagesHint", { max: MAX_SIMPLE_IMAGES })
-          );
-        }
-        return { added, total: get().simpleImages.length };
-      },
+          let acceptedCount = 0;
+          set((state) => {
+            const roomNow = Math.max(
+              0,
+              MAX_SIMPLE_IMAGES - state.simpleImages.length
+            );
+            const accepted = additions.slice(0, roomNow);
+            acceptedCount = accepted.length;
+            additions.slice(roomNow).forEach((image) => {
+              cardSource.retireObjectUrl(image.url);
+              if (image.assetKey) {
+                void deleteCanvasAsset(image.assetKey).catch(() => undefined);
+              }
+            });
+            return {
+              simpleImages: reindexSimpleImages([
+                ...state.simpleImages,
+                ...accepted,
+              ]),
+            };
+          });
+
+          if (files.length > room) {
+            toast.info(
+              i18n.t("simple.maxImagesHint", { max: MAX_SIMPLE_IMAGES })
+            );
+          }
+          return { added: acceptedCount, total: get().simpleImages.length };
+        }),
 
       removeSimpleImage: (id) => {
         const target = get().simpleImages.find((image) => image.id === id);
@@ -802,10 +1087,11 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             state.simpleImages.filter((image) => image.id !== id)
           ),
         }));
-        cardSource.revokeObjectUrl(target.url);
-        if (target.assetKey) {
-          void deleteCanvasAsset(target.assetKey).catch(() => undefined);
-        }
+        // Deferred (lease-aware) revoke: an open workspace may still show it.
+        // The asset itself is reclaimed by the age-graced startup prune so a
+        // second tab or an in-flight preview is never broken by an immediate
+        // IndexedDB delete.
+        cardSource.retireObjectUrl(target.url);
       },
 
       moveSimpleImage: (id, direction) => {
@@ -827,31 +1113,176 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         const images = get().simpleImages;
         set({ simpleImages: [] });
         images.forEach((image) => {
-          cardSource.revokeObjectUrl(image.url);
-          if (image.assetKey) {
-            void deleteCanvasAsset(image.assetKey).catch(() => undefined);
-          }
+          cardSource.retireObjectUrl(image.url);
         });
       },
 
-      resolveSimpleImageUrls: async () => {
+      resolveSimpleImageRequest: async () => {
         const state = get();
         const { corsProxy, corsProxyMode } = useConfigStore.getState();
+        const ordered = sortSimpleImages(state.simpleImages);
+        const slots: SimpleImageRequest["slots"] = [];
         const urls: string[] = [];
-        for (const image of sortSimpleImages(state.simpleImages)) {
-          try {
-            const url = await cardSource.resolveCardDataUrl(
-              { url: image.url, assetKey: image.assetKey },
-              corsProxy,
-              corsProxyMode
-            );
-            if (url && !urls.includes(url)) urls.push(url);
-          } catch {
-            // Skip unreadable images; the panel marks those slots explicitly.
+        for (let index = 0; index < ordered.length; index += 1) {
+          const image = ordered[index];
+          let url: string | null = null;
+          if (!image.missing && image.url) {
+            try {
+              url = await cardSource.resolveCardDataUrl(
+                { url: image.url, assetKey: image.assetKey },
+                corsProxy,
+                corsProxyMode
+              );
+            } catch {
+              url = null;
+            }
           }
+          slots.push({ id: image.id, index, url });
+          if (url && !urls.includes(url)) urls.push(url);
         }
-        return urls;
+        return { total: ordered.length, slots, urls };
       },
+
+      resolveSimpleImageUrls: async () =>
+        (await get().resolveSimpleImageRequest()).urls,
+
+      replaceSimpleImage: (id, input) =>
+        withSimpleMutation(async () => {
+          const current = get().simpleImages.find((image) => image.id === id);
+          if (!current) {
+            toast.error(i18n.t("simple.inputChanged"));
+            return false;
+          }
+          if (
+            input.expected &&
+            ((input.expected.revision ?? 0) !== (current.revision ?? 0) ||
+              input.expected.assetKey !== current.assetKey)
+          ) {
+            toast.error(i18n.t("simple.inputChanged"));
+            return false;
+          }
+
+          const write = await writeSimpleAsset(input.blob, id);
+          const latest = get().simpleImages.find((image) => image.id === id);
+          if (!latest) {
+            // The slot was removed while the bytes were being written.
+            if (write.assetKey) {
+              void deleteCanvasAsset(write.assetKey).catch(() => undefined);
+            }
+            cardSource.retireObjectUrl(write.url);
+            toast.error(i18n.t("simple.inputChanged"));
+            return false;
+          }
+
+          const previousUrl = latest.url;
+          set((state) => ({
+            simpleImages: reindexSimpleImages(
+              state.simpleImages.map((image) =>
+                image.id === id
+                  ? {
+                      ...image,
+                      url: write.url,
+                      assetKey: write.assetKey,
+                      persist: write.persist,
+                      missing: false,
+                      revision: (image.revision ?? 0) + 1,
+                    }
+                  : image
+              )
+            ),
+          }));
+          cardSource.retireObjectUrl(previousUrl);
+          return true;
+        }),
+
+      setSimpleBaseFromBlob: (input) =>
+        withSimpleMutation(async () => {
+          const id = `simple-${Date.now()}-${generateNanoid(6)}`;
+          const write = await writeSimpleAsset(input.blob, id);
+          const previous = get().simpleImages[0];
+          const nextImage: SimpleImage = {
+            id,
+            name: input.name,
+            url: write.url,
+            assetKey: write.assetKey,
+            order: 0,
+            persist: write.persist,
+            revision: 0,
+          };
+          set((state) => ({
+            simpleImages: reindexSimpleImages([
+              nextImage,
+              ...state.simpleImages.slice(1),
+            ]),
+          }));
+          if (previous) cardSource.retireObjectUrl(previous.url);
+          return true;
+        }),
+
+      addSimpleReferenceFromBlob: (input) =>
+        withSimpleMutation(async () => {
+          if (get().simpleImages.length >= MAX_SIMPLE_IMAGES) {
+            toast.info(
+              i18n.t("simple.maxImagesHint", { max: MAX_SIMPLE_IMAGES })
+            );
+            return false;
+          }
+          const id = `simple-${Date.now()}-${generateNanoid(6)}`;
+          const write = await writeSimpleAsset(input.blob, id);
+          const nextImage: SimpleImage = {
+            id,
+            name: input.name,
+            url: write.url,
+            assetKey: write.assetKey,
+            order: 0,
+            persist: write.persist,
+            revision: 0,
+          };
+          let accepted = false;
+          set((state) => {
+            // Re-check against the latest list: a removal is fine, but never
+            // drop an existing input just to make room for the new one.
+            if (state.simpleImages.length >= MAX_SIMPLE_IMAGES) {
+              return state;
+            }
+            accepted = true;
+            return {
+              simpleImages: reindexSimpleImages([
+                ...state.simpleImages,
+                nextImage,
+              ]),
+            };
+          });
+          if (!accepted) {
+            cardSource.retireObjectUrl(write.url);
+            if (write.assetKey) {
+              void deleteCanvasAsset(write.assetKey).catch(() => undefined);
+            }
+            toast.info(
+              i18n.t("simple.maxImagesHint", { max: MAX_SIMPLE_IMAGES })
+            );
+            return false;
+          }
+          return true;
+        }),
+
+      removeUnavailableSimpleImages: () => {
+        // Only confirmed-missing entries. A restoreError (storage timeout) or
+        // an entry still waiting for hydration must never be bulk deleted.
+        const unavailable = get().simpleImages.filter(
+          (image) => image.missing
+        );
+        if (unavailable.length === 0) return 0;
+        const removed = new Set(unavailable.map((image) => image.id));
+        set((state) => ({
+          simpleImages: reindexSimpleImages(
+            state.simpleImages.filter((image) => !removed.has(image.id))
+          ),
+        }));
+        unavailable.forEach((image) => cardSource.retireObjectUrl(image.url));
+        return unavailable.length;
+      },
+
 
       addFiles: async (fileList, options) => {
         const imageFiles = Array.from(fileList).filter((file) =>
@@ -868,10 +1299,14 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
           try {
             const blob = file;
             const id = `card-${Date.now()}-${generateNanoid(6)}`;
-            const assetKey = `card-${id}`;
+            const proposedAssetKey = `card-${id}`;
+            let assetKey: string | undefined = proposedAssetKey;
+            let persistMode: CanvasCard["persist"] = "asset";
             try {
-              await putCanvasAsset(assetKey, blob);
+              await putCanvasAsset(proposedAssetKey, blob);
             } catch {
+              assetKey = undefined;
+              persistMode = "memory";
               toast.warning(i18n.t("freeCanvas.cards.assetStoreFailed"), {
                 id: "canvas-asset-failed",
               });
@@ -905,6 +1340,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
                     : undefined,
                 assetKey,
                 assetState: "ready",
+                persist: persistMode,
                 naturalWidth: dimensions.width,
                 naturalHeight: dimensions.height,
               };
@@ -917,6 +1353,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
                 ...(role === "main"
                   ? {
                       ...EMPTY_EDITING,
+                      maskVersion: state.maskVersion + 1,
                       selectedCardId: id,
                     }
                   : {}),
@@ -985,6 +1422,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
 
         let url = input.url;
         let assetKey: string | undefined;
+        let persistMode: CanvasCard["persist"] = "asset";
         let assetState: CanvasAssetState = cardSource.isHttpUrl(input.url)
           ? "remote"
           : "loading";
@@ -1015,10 +1453,13 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             corsProxyMode
           );
           if (blob) {
-            assetKey = `card-${id}`;
+            const proposedAssetKey = `card-${id}`;
             try {
-              await putCanvasAsset(assetKey, blob);
+              await putCanvasAsset(proposedAssetKey, blob);
+              assetKey = proposedAssetKey;
             } catch {
+              assetKey = undefined;
+              persistMode = "memory";
               toast.warning(i18n.t("freeCanvas.cards.assetStoreFailed"), {
                 id: "canvas-asset-failed",
               });
@@ -1071,6 +1512,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             url,
             assetKey,
             assetState,
+            persist: assetState === "gallery" ? undefined : persistMode,
             naturalWidth: dimensions.width,
             naturalHeight: dimensions.height,
             x: position.x,
@@ -1091,7 +1533,11 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             cards,
             selectedCardId: id,
             ...(finalRole === "main"
-              ? { ...EMPTY_EDITING, activeTool: "select" as const }
+              ? {
+                  ...EMPTY_EDITING,
+                  maskVersion: current.maskVersion + 1,
+                  activeTool: "select" as const,
+                }
               : {}),
           };
         });
@@ -1100,11 +1546,11 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
 
       addResultCard: async (result, taskId, options) => {
         const state = get();
-        // Reference cards share the nanoid of the result they came from; they
-        // must never be mistaken for the result card (their blob is theirs).
+        // Only the card marked as the result owner represents this generation.
+        // Reference copies share the nanoid but own their own bitmap.
         const existing = state.cards.find(
           (card) =>
-            card.role !== "reference" &&
+            card.ownsResult &&
             (card.nanoid === result.nanoid ||
               card.galleryNanoid === result.nanoid)
         );
@@ -1116,14 +1562,6 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
           state.dismissedResultNanoids.includes(result.nanoid)
         ) {
           return null;
-        }
-
-        if (options?.restoreDismissed) {
-          set((current) => ({
-            dismissedResultNanoids: current.dismissedResultNanoids.filter(
-              (id) => id !== result.nanoid
-            ),
-          }));
         }
 
         const id = `result-${result.nanoid}`;
@@ -1139,7 +1577,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
 
         const existingAfterLoad = get().cards.find(
           (card) =>
-            card.role !== "reference" &&
+            card.ownsResult &&
             (card.nanoid === result.nanoid ||
               card.galleryNanoid === result.nanoid)
         );
@@ -1147,6 +1585,8 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
           if (blob) URL.revokeObjectURL(url);
           return existingAfterLoad.id;
         }
+
+        if (options?.recordHistory) get().pushHistory();
 
         let card: CanvasCard = {
           id,
@@ -1169,26 +1609,44 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
           resultMeta: buildResultMeta(result),
           naturalWidth: dimensions.width,
           naturalHeight: dimensions.height,
+          ownsResult: true,
           x: 0,
           y: 0,
         };
 
         set((current) => {
           const position = nextCardPosition(current.cards, "result");
-          card = { ...card, ...position };
+          const ingestSeq = options?.ingest
+            ? current.resultIngestSeq + 1
+            : undefined;
+          card = {
+            ...card,
+            ...position,
+            ...(ingestSeq ? { ingestSeq } : {}),
+          };
           return {
             cards: normalizeCards([...current.cards, card]),
+            ...(ingestSeq
+              ? { resultIngestSeq: ingestSeq }
+              : {}),
+            ...(options?.restoreDismissed
+              ? {
+                  dismissedResultNanoids: current.dismissedResultNanoids.filter(
+                    (item) => item !== result.nanoid
+                  ),
+                }
+              : {}),
           };
         });
 
         void (async () => {
           if (saved || !blob) return;
           const assetKey = `card-${id}`;
-          let assetState: CanvasAssetState = "ready";
+          let persistMode: CanvasCard["persist"] = "asset";
           try {
             await putCanvasAsset(assetKey, blob);
           } catch {
-            assetState = "ready";
+            persistMode = "memory";
             toast.warning(i18n.t("freeCanvas.cards.assetStoreFailed"), {
               id: "canvas-asset-failed",
             });
@@ -1198,7 +1656,25 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
           // re-applying the insertion-time snapshot used to revert that.
           set((current) => ({
             cards: current.cards.map((item) =>
-              item.id === id ? { ...item, assetKey, assetState } : item
+              item.id === id
+                ? item.saveStatus === "saved"
+                  ? {
+                      ...item,
+                      // The queue saved the original while this write was in
+                      // flight; the gallery is the authority now.
+                      assetKey: undefined,
+                      assetState: "gallery",
+                      persist: undefined,
+                    }
+                  : {
+                      ...item,
+                      // A failed write must not claim a persisted asset key:
+                      // reload shows the explicit session-only/missing state.
+                      assetKey: persistMode === "asset" ? assetKey : undefined,
+                      assetState: "ready",
+                      persist: persistMode,
+                    }
+                : item
             ),
           }));
         })();
@@ -1220,6 +1696,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         const id = `ref-${result.nanoid}`;
         let url = result.url;
         let assetKey: string | undefined;
+        let persistMode: CanvasCard["persist"] = "asset";
         let assetState: CanvasAssetState = cardSource.isHttpUrl(result.url)
           ? "remote"
           : "loading";
@@ -1246,10 +1723,13 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
               : null);
           if (blob) {
             url = URL.createObjectURL(blob);
-            assetKey = `card-${id}`;
+            const proposedAssetKey = `card-${id}`;
             try {
-              await putCanvasAsset(assetKey, blob);
+              await putCanvasAsset(proposedAssetKey, blob);
+              assetKey = proposedAssetKey;
             } catch {
+              assetKey = undefined;
+              persistMode = "memory";
               toast.warning(i18n.t("freeCanvas.cards.assetStoreFailed"), {
                 id: "canvas-asset-failed",
               });
@@ -1281,6 +1761,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             url,
             assetKey,
             assetState,
+            persist: assetState === "gallery" ? undefined : persistMode,
             naturalWidth: dimensions.width,
             naturalHeight: dimensions.height,
             x: position.x,
@@ -1308,10 +1789,14 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         const width = Math.max(1, Math.round(input.width));
         const height = Math.max(1, Math.round(input.height));
         const id = `tool-${Date.now()}-${generateNanoid(6)}`;
-        const assetKey = `card-${id}`;
+        const proposedAssetKey = `card-${id}`;
+        let assetKey: string | undefined = proposedAssetKey;
+        let persistMode: CanvasCard["persist"] = "asset";
         try {
-          await putCanvasAsset(assetKey, input.blob);
+          await putCanvasAsset(proposedAssetKey, input.blob);
         } catch {
+          assetKey = undefined;
+          persistMode = "memory";
           toast.warning(i18n.t("freeCanvas.cards.assetStoreFailed"), {
             id: "canvas-asset-failed",
           });
@@ -1328,6 +1813,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             url,
             assetKey,
             assetState: "ready",
+            persist: persistMode,
             naturalWidth: width,
             naturalHeight: height,
             saveStatus: "local",
@@ -1345,6 +1831,14 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
       replaceCardImage: async (id, input) => {
         const target = get().cards.find((card) => card.id === id);
         if (!target || get().isCommittingMain) return false;
+        if (
+          input.clearMask &&
+          input.maskVersion !== undefined &&
+          input.maskVersion !== get().maskVersion
+        ) {
+          toast.warning(i18n.t("freeCanvas.cards.maskChanged"));
+          return false;
+        }
 
         const width = Math.max(1, Math.round(input.width));
         const height = Math.max(1, Math.round(input.height));
@@ -1372,17 +1866,23 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
           }
 
           // Versioned key: never overwrite the asset the undo snapshot points at.
-          const assetKey = nextEditAssetKey(target.id);
+          const proposedAssetKey = nextEditAssetKey(target.id);
+          let assetKey: string | undefined = proposedAssetKey;
+          let persistMode: CanvasCard["persist"] = "asset";
           try {
-            await putCanvasAsset(assetKey, input.blob);
+            await putCanvasAsset(proposedAssetKey, input.blob);
           } catch {
+            assetKey = undefined;
+            persistMode = "memory";
             toast.warning(i18n.t("freeCanvas.cards.assetStoreFailed"), {
               id: "canvas-asset-failed",
             });
           }
 
           if (!get().cards.some((card) => card.id === id)) {
-            void deleteCanvasAsset(assetKey).catch(() => undefined);
+            if (assetKey) {
+              void deleteCanvasAsset(assetKey).catch(() => undefined);
+            }
             return false;
           }
 
@@ -1404,15 +1904,24 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
                       originalAssetKey,
                       originalUrl: card.originalUrl ?? card.url,
                       assetState: "ready",
+                      persist: persistMode,
                       naturalWidth: width,
                       naturalHeight: height,
                       isEdited: true,
+                      // The old saved-edited record no longer matches this
+                      // bitmap; a later save must write a new work.
+                      editedGalleryNanoid: undefined,
                       saveStatus: "local",
                       saveError: undefined,
                     }
                   : card
               ),
-              ...(input.clearMask ? RESET_MASK : {}),
+              // Only the current main owns the pending mask; editing a
+              // free/result card must never clear it.
+              ...(input.clearMask &&
+              current.cards.find((card) => card.id === id)?.role === "main"
+                ? resetMaskState(current)
+                : {}),
               selectedCardId: id,
             };
           });
@@ -1423,11 +1932,12 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
       },
 
       syncResultSaveState: (result) => {
-        // Only result/main cards own the generated blob. A reference card that
-        // shares the nanoid keeps its own asset, so never update or clean it.
+        // Only the card that owns the generation result is updated. A reference
+        // copy shares the nanoid but keeps its own bitmap; a free card that was
+        // demoted from main still owns the same result.
         const card = get().cards.find(
           (item) =>
-            item.role !== "reference" &&
+            item.ownsResult &&
             (item.nanoid === result.nanoid ||
               item.galleryNanoid === result.nanoid)
         );
@@ -1438,7 +1948,6 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
 
         if (result.gallerySaveStatus === "saved") {
           if (card.saveStatus === "saved" && card.galleryNanoid) return;
-          const previousKey = card.assetKey;
           set((state) => ({
             cards: state.cards.map((item) =>
               item.id === card.id
@@ -1447,15 +1956,17 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
                     saveStatus: "saved",
                     saveError: undefined,
                     galleryNanoid: result.nanoid,
-                    assetKey: item.isEdited ? item.assetKey : undefined,
-                    assetState: item.isEdited ? item.assetState : "gallery",
+                    // The gallery is now the authority for these bytes. Do not
+                    // delete the previous asset immediately: an undo snapshot
+                    // or another tab may still hold it; the age-graced prune
+                    // reclaims it later.
+                    assetKey: undefined,
+                    assetState: "gallery",
+                    persist: undefined,
                   }
                 : item
             ),
           }));
-          if (previousKey && !card.isEdited) {
-            void deleteCanvasAsset(previousKey).catch(() => undefined);
-          }
         } else if (result.gallerySaveStatus === "failed") {
           if (card.saveStatus === "failed" && card.saveError) return;
           set((state) => ({
@@ -1475,7 +1986,12 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
       retrySaveCard: async (id) => {
         const card = get().cards.find((item) => item.id === id);
         if (!card) return false;
-        if (card.saveStatus === "saved" && card.galleryNanoid) return true;
+        if (
+          card.saveStatus === "saved" &&
+          (card.editedGalleryNanoid || card.galleryNanoid)
+        ) {
+          return true;
+        }
 
         const meta: ResultMeta | null = card.resultMeta
           ? card.resultMeta
@@ -1517,7 +2033,10 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
 
         const { corsProxy, corsProxyMode } = useConfigStore.getState();
         let blob = await cardSource.resolveCardBlob(card, corsProxy, corsProxyMode);
-        if (!blob && card.resultTaskId) {
+        // The queue holds the *generated* bitmap. An edited card must never
+        // fall back to it, or "retry save" would upload the unedited original
+        // under the edited card's label.
+        if (!blob && !card.isEdited && card.resultTaskId) {
           const task = useQueueStore
             .getState()
             .tasks.find((item) => item.id === card.resultTaskId);
@@ -1569,7 +2088,6 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             },
             useConfigStore.getState().historyQuota
           );
-          const previousKey = card.assetKey;
           const recoveredUrl = card.url || URL.createObjectURL(blob);
           set((state) => ({
             cards: state.cards.map((item) =>
@@ -1579,16 +2097,22 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
                     url: recoveredUrl,
                     saveStatus: "saved",
                     saveError: undefined,
-                    galleryNanoid: saveNanoid,
+                    // The original generation record keeps its identity; an
+                    // edited bitmap is a separate work referenced explicitly.
+                    galleryNanoid: item.isEdited ? item.galleryNanoid : saveNanoid,
+                    editedGalleryNanoid: item.isEdited
+                      ? saveNanoid
+                      : item.editedGalleryNanoid,
+                    // Keep an edited card's local asset (it is the only copy
+                    // that can be used for another edit) and drop the original
+                    // result asset now that the gallery owns those bytes.
                     assetKey: item.isEdited ? item.assetKey : undefined,
                     assetState: "gallery",
+                    persist: item.isEdited ? item.persist : undefined,
                   }
                 : item
             ),
           }));
-          if (previousKey && !card.isEdited) {
-            void deleteCanvasAsset(previousKey).catch(() => undefined);
-          }
           if (card.resultTaskId && !card.isEdited) {
             useQueueStore.setState((queue) => ({
               tasks: queue.tasks.map((task) =>
@@ -1632,40 +2156,38 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         const state = get();
         if (state.isCommittingMain) return false;
 
-        const existing = state.cards.find(
+        const main = state.cards.find((card) => card.role === "main");
+        const candidates = state.cards.filter(
           (card) => card.galleryNanoid === input.nanoid && !card.isEdited
         );
+        const existing =
+          candidates.find((card) => card.role === "main") ??
+          candidates.find((card) => card.ownsResult) ??
+          candidates[0];
         if (existing) {
-          if (existing.role === "main") return true;
+          // The gallery record is already the visible main image: no history,
+          // no mask discard, no duplicate card.
+          if (isSameImage(existing, main)) return true;
           return get().promoteToMain(existing.id, {
             discardMask: input.discardMask,
+            maskVersion: input.maskVersion,
           });
         }
 
-        if (
-          state.maskStrokes.length > 0 &&
-          !input.discardMask
-        ) {
-          toast.warning(i18n.t("freeCanvas.cards.discardMaskTitle"));
-          return false;
-        }
+        if (rejectMainSwitchForMask(state, input)) return false;
 
         set({ isCommittingMain: true });
         try {
-          const mainAtStart = state.cards.find(
-            (card) => card.role === "main"
-          );
-
           const dimensions = await loadDimensionsSafe(input.blob);
+          const latest = get().cards;
+          if (rejectMainSwitchForMask(get(), input)) return false;
+          const liveMain = latest.find((card) => card.role === "main");
+
           const url = URL.createObjectURL(input.blob);
           const id = `gallery-${input.nanoid}-${generateNanoid(4)}`;
-          const latest = get().cards;
-          const liveMain = mainAtStart
-            ? latest.find((card) => card.id === mainAtStart.id)
-            : undefined;
           const position = liveMain
             ? { x: liveMain.x, y: liveMain.y }
-            : nextCardPosition(latest, "main");
+            : { x: 0, y: 0 };
 
           const card: CanvasCard = {
             id,
@@ -1683,31 +2205,27 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
           };
 
           const demoted = latest.map((previousCard) => {
-            let next = previousCard;
-            if (mainAtStart && previousCard.id === mainAtStart.id) {
-              next = {
-                ...next,
-                role: demotedRole(next),
-                refOrder:
-                  demotedRole(next) === "reference"
-                    ? nextRefOrder(latest)
-                    : undefined,
+            if (liveMain && previousCard.id === liveMain.id) {
+              return {
+                ...previousCard,
+                role: demotedReplacedMain(),
+                refOrder: undefined,
               };
             }
-            return next;
+            return previousCard;
           });
 
           const nextCards = normalizeCards(
-            settleMainCard([...demoted, card], card.id, mainAtStart?.id)
+            settleMainCard([...demoted, card], card.id, liveMain?.id)
           );
           get().pushHistory();
-          set({
+          set((current) => ({
             cards: nextCards,
-            ...EMPTY_EDITING,
+            ...resetMaskState(current),
             activeTool: "select",
             selectedCardId: id,
             isCommittingMain: false,
-          });
+          }));
           toast.success(i18n.t("freeCanvas.cards.loadedAsMain"));
           return true;
         } catch (error) {
@@ -1728,17 +2246,18 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         const target = state.cards.find((card) => card.id === id);
         if (!target) return false;
         if (target.role === "main") return true;
-        if (state.maskStrokes.length > 0 && !options?.discardMask) {
-          toast.warning(i18n.t("freeCanvas.cards.discardMaskTitle"));
-          return false;
+        const currentMain = state.cards.find((card) => card.role === "main");
+        // A reference copy can depict the same image as the current main;
+        // promoting it would demote the main and discard its mask while the
+        // visible image does not change at all.
+        if (isSameImage(target, currentMain)) {
+          toast.info(i18n.t("freeCanvas.cards.alreadyMain"));
+          return true;
         }
+        if (rejectMainSwitchForMask(state, options)) return false;
 
         set({ isCommittingMain: true });
         try {
-          const mainAtStart = state.cards.find(
-            (card) => card.role === "main"
-          );
-
           const currentTarget = get().cards.find((card) => card.id === id);
           if (!currentTarget) return false;
 
@@ -1756,19 +2275,40 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             targetRuntime = localCard;
           }
 
+          if (rejectMainSwitchForMask(get(), options)) {
+            if (
+              targetRuntime &&
+              targetRuntime.url &&
+              targetRuntime.url !== currentTarget.url
+            ) {
+              cardSource.retireObjectUrl(targetRuntime.url);
+            }
+            return false;
+          }
+
           const latest = get().cards;
-          if (!latest.some((card) => card.id === id)) return false;
+          const latestTarget = latest.find((card) => card.id === id);
+          if (!latestTarget) {
+            if (targetRuntime?.url && targetRuntime.url !== currentTarget.url) {
+              cardSource.retireObjectUrl(targetRuntime.url);
+            }
+            return false;
+          }
+          if (latestTarget.role === "main") {
+            if (targetRuntime?.url && targetRuntime.url !== currentTarget.url) {
+              cardSource.retireObjectUrl(targetRuntime.url);
+            }
+            return true;
+          }
+          const liveMain = latest.find((card) => card.role === "main");
 
           const nextCards = latest.map((card) => {
             let next = card;
-            if (mainAtStart && card.id === mainAtStart.id) {
+            if (liveMain && card.id === liveMain.id) {
               next = {
                 ...next,
-                role: demotedRole(next),
-                refOrder:
-                  demotedRole(next) === "reference"
-                    ? nextRefOrder(latest)
-                    : undefined,
+                role: demotedReplacedMain(),
+                refOrder: undefined,
               };
             }
             if (card.id === id) {
@@ -1781,15 +2321,15 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
           });
 
           get().pushHistory();
-          set({
+          set((current) => ({
             cards: normalizeCards(
-              settleMainCard(nextCards, id, mainAtStart?.id)
+              settleMainCard(nextCards, id, liveMain?.id)
             ),
-            ...EMPTY_EDITING,
+            ...resetMaskState(current),
             activeTool: "select",
             selectedCardId: id,
             isCommittingMain: false,
-          });
+          }));
           toast.success(i18n.t("freeCanvas.cards.movedToMain"));
           return true;
         } catch (error) {
@@ -1809,10 +2349,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         if (state.isCommittingMain) return false;
         const main = state.cards.find((card) => card.role === "main");
         if (!main) return true;
-        if (state.maskStrokes.length > 0 && !options?.discardMask) {
-          toast.warning(i18n.t("freeCanvas.cards.discardMaskTitle"));
-          return false;
-        }
+        if (rejectMainSwitchForMask(state, options)) return false;
 
         set({ isCommittingMain: true });
         try {
@@ -1832,13 +2369,13 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             return next;
           });
           get().pushHistory();
-          set({
+          set((current) => ({
             cards: normalizeCards(nextCards),
-            ...EMPTY_EDITING,
+            ...resetMaskState(current),
             activeTool: "select",
             selectedCardId: null,
             isCommittingMain: false,
-          });
+          }));
           toast.success(i18n.t("freeCanvas.cards.clearedMain"));
           return true;
         } catch (error) {
@@ -1931,7 +2468,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         if (!card || card.role === "main") return null;
         get().pushHistory();
         const dismissedNanoid =
-          card.role === "result" && card.nanoid ? [card.nanoid] : [];
+          card.ownsResult && card.nanoid ? [card.nanoid] : [];
         set((state) => ({
           cards: normalizeCards(
             state.cards.filter((item) => item.id !== id)
@@ -1943,9 +2480,10 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             dismissedNanoid
           ),
         }));
-        cardSource.revokeObjectUrl(card.url);
+        // Lease-aware: a workspace may still be showing this bitmap.
+        cardSource.retireObjectUrl(card.url);
         if (card.originalUrl && card.originalUrl !== card.url) {
-          cardSource.revokeObjectUrl(card.originalUrl);
+          cardSource.retireObjectUrl(card.originalUrl);
         }
         return card;
       },
@@ -2023,9 +2561,12 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
                   url: localCard.url,
                   assetKey: localCard.assetKey,
                   assetState: localCard.assetState,
+                  persist: localCard.persist ?? item.persist,
                   naturalWidth: localCard.naturalWidth ?? item.naturalWidth,
                   naturalHeight: localCard.naturalHeight ?? item.naturalHeight,
                   galleryNanoid: localCard.galleryNanoid ?? item.galleryNanoid,
+                  editedGalleryNanoid:
+                    localCard.editedGalleryNanoid ?? item.editedGalleryNanoid,
                   originalUrl,
                 }
               : item
@@ -2105,9 +2646,18 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         return results.map((card) => card.id);
       },
 
+      retryHydrateAssets: async () => {
+        if (hydrationInFlight) return;
+        // Keep failed entries: a storage timeout must never be mistaken for a
+        // deleted asset, and the Simple panel offers retry, not bulk removal.
+        set({ isHydrated: false, hydrationError: false });
+        await get().hydrateAssets();
+      },
+
       hydrateAssets: async () => {
         if (get().isHydrated || hydrationInFlight) return;
         hydrationInFlight = true;
+        let hydrationHadError = false;
         const state = get();
         const cards = await Promise.all(
           state.cards.map(async (card) => {
@@ -2184,6 +2734,28 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
               }
             }
 
+            if (card.editedGalleryNanoid) {
+              try {
+                const record = await getHistoryRecordByNanoid(
+                  card.editedGalleryNanoid
+                );
+                if (record?.imageBlob) {
+                  const dimensions = await loadDimensionsSafe(
+                    record.imageBlob
+                  );
+                  return {
+                    ...card,
+                    url: URL.createObjectURL(record.imageBlob),
+                    assetState: "gallery" as CanvasAssetState,
+                    naturalWidth: card.naturalWidth ?? dimensions.width,
+                    naturalHeight: card.naturalHeight ?? dimensions.height,
+                  };
+                }
+              } catch {
+                // fall through
+              }
+            }
+
             if (card.galleryNanoid && !card.isEdited) {
               try {
                 const record = await getHistoryRecordByNanoid(
@@ -2226,7 +2798,9 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
         // instead of being silently dropped.
         const hydratedSimpleImages = await Promise.all(
           state.simpleImages.map(async (image) => {
-            if (image.url && cardSource.isBlobUrl(image.url)) return image;
+            if (image.url && cardSource.isBlobUrl(image.url)) {
+              return { ...image, restoreError: false };
+            }
             if (image.assetKey) {
               try {
                 const blob = await getCanvasAsset(image.assetKey);
@@ -2235,13 +2809,33 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
                     ...image,
                     url: URL.createObjectURL(blob),
                     missing: false,
+                    restoreError: false,
                   };
                 }
+                return {
+                  ...image,
+                  url: "",
+                  missing: true,
+                  restoreError: false,
+                };
               } catch {
-                // fall through to the missing state
+                // A storage timeout is not proof the asset is gone. Keep the
+                // entry and offer retry; never expose it to bulk removal.
+                hydrationHadError = true;
+                return {
+                  ...image,
+                  url: "",
+                  missing: false,
+                  restoreError: true,
+                };
               }
             }
-            return { ...image, url: "", missing: true };
+            return {
+              ...image,
+              url: "",
+              missing: true,
+              restoreError: false,
+            };
           })
         );
 
@@ -2258,6 +2852,11 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             current.cards.map((card) => {
               const hydrated = hydratedById.get(card.id);
               if (!hydrated) return card;
+              // The queue is session-only. A card restored as "saving" cannot
+              // still have a live gallery write, so it must become retryable
+              // instead of staying "saving" forever with no retry entry.
+              const saveStatus =
+                card.saveStatus === "saving" ? "failed" : card.saveStatus;
               return {
                 ...card,
                 url: hydrated.url,
@@ -2269,6 +2868,11 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
                 originalUrl: hydrated.originalUrl ?? card.originalUrl,
                 naturalWidth: card.naturalWidth ?? hydrated.naturalWidth,
                 naturalHeight: card.naturalHeight ?? hydrated.naturalHeight,
+                saveStatus,
+                saveError:
+                  card.saveStatus === "saving"
+                    ? i18n.t("freeCanvas.cards.saveInterrupted")
+                    : card.saveError,
               };
             })
           );
@@ -2280,6 +2884,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
                 ...image,
                 url: image.url || hydrated.url,
                 missing: hydrated.missing,
+                restoreError: hydrated.restoreError,
               };
             })
           );
@@ -2287,6 +2892,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             cards: finalCards,
             simpleImages: finalSimpleImages,
             isHydrated: true,
+            hydrationError: hydrationHadError,
           };
         });
 
@@ -2381,17 +2987,36 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
       setMaskBrushSize: (maskBrushSize) => set({ maskBrushSize }),
       setIsMaskEraser: (isMaskEraser) => set({ isMaskEraser }),
       setMaskStrokes: (action) => {
+        // A main-image switch is committing; a stroke accepted now could be
+        // discarded without ever being part of the confirmation the user saw.
+        if (get().isCommittingMain) return;
         const prev = get().maskStrokes;
         const next = typeof action === "function" ? action(prev) : action;
         if (next === prev) return;
         get().pushHistory();
-        set({ maskStrokes: next });
+        set((state) => ({
+          maskStrokes: next,
+          maskVersion: state.maskVersion + 1,
+        }));
       },
-      setIsMaskInverted: (isMaskInverted) => set({ isMaskInverted }),
+      setIsMaskInverted: (isMaskInverted) => {
+        if (get().isCommittingMain) return;
+        if (get().isMaskInverted === isMaskInverted) return;
+        get().pushHistory();
+        set((state) => ({
+          isMaskInverted,
+          maskVersion: state.maskVersion + 1,
+        }));
+      },
       clearMask: () => {
+        if (get().isCommittingMain) return;
         if (get().maskStrokes.length === 0 && !get().isMaskInverted) return;
         get().pushHistory();
-        set({ maskStrokes: [], isMaskInverted: false });
+        set((state) => ({
+          maskStrokes: [],
+          isMaskInverted: false,
+          maskVersion: state.maskVersion + 1,
+        }));
       },
 
       setZoom: (action) =>
@@ -2430,6 +3055,7 @@ export const useFreeCanvasStore = create<FreeCanvasState>()(
             assetKey: image.assetKey,
             order: image.order,
             persist: image.persist,
+            revision: image.revision,
           })),
           // Remember user-removed results so ingestion never resurrects them,
           // even across a reload while the queue still holds the task.
@@ -2525,20 +3151,8 @@ export function getReferenceCards(cards: CanvasCard[]): CanvasCard[] {
   return sortReferences(cards);
 }
 
-if (typeof window !== "undefined") {
-  // Undo history is session-only, so at unload nothing can reference the
-  // assets of cards removed during this session. Drop them (and anything past
-  // the cap) instead of leaving every deleted upload/result in IndexedDB.
-  window.addEventListener("pagehide", () => {
-    try {
-      const keys = useFreeCanvasStore
-        .getState()
-        .cards.flatMap((card) => [card.assetKey, card.originalAssetKey])
-        .filter((key): key is string => Boolean(key));
-      void pruneCanvasAssets(keys, 0).catch(() => undefined);
-    } catch {
-      // Cleanup must never block unloading.
-    }
-  });
-}
-
+// There is deliberately no pagehide asset sweep. The undo stack is session-only
+// and a page can still be restored from the back/forward cache, so an unload
+// sweep with zero grace used to delete simple inputs and assets that another
+// tab or a restored page still referenced. The age-graced startup prune is the
+// only reclamation path.

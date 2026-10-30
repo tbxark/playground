@@ -17,6 +17,8 @@ type EditTarget = {
   discardWarning?: boolean;
   /** Offer "apply as new card" next to the primary apply. */
   allowCopy?: boolean;
+  /** Mask revision captured when the workspace was opened. */
+  maskVersion?: number;
 };
 
 /**
@@ -31,7 +33,11 @@ export function useCardEdit() {
     async (
       cardId: string,
       output: LightboxEditOutput,
-      options?: { name?: string; clearMask?: boolean }
+      options?: {
+        name?: string;
+        clearMask?: boolean;
+        maskVersion?: number;
+      }
     ) => {
       const ok = await useFreeCanvasStore.getState().replaceCardImage(cardId, {
         blob: output.blob,
@@ -39,6 +45,7 @@ export function useCardEdit() {
         height: output.height,
         name: options?.name,
         clearMask: options?.clearMask,
+        maskVersion: options?.maskVersion,
       });
       if (!ok) {
         toast.error(t("preview.edit.applyFailed"));
@@ -66,6 +73,7 @@ export function useCardEdit() {
         applyToCard(target.cardId, output, {
           name: target.name,
           clearMask: target.isMain,
+          maskVersion: target.isMain ? target.maskVersion : undefined,
         }),
       onApplyAlternate: target.allowCopy
         ? async (output) => {

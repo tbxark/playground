@@ -35,13 +35,14 @@ export async function listCanvasAssetKeys(): Promise<string[]> {
 export const CANVAS_ASSET_PREFIXES = ["card-", "simple-"];
 
 /**
- * Remove assets that no persisted card points at.
+ * Remove assets that no persisted card points at and that are older than the
+ * grace period.
  *
- * Runs on startup after hydration and whenever a card owning an asset is
- * deleted. The age grace avoids deleting an asset another open tab just wrote
- * before its card list reached localStorage; `maxCount` additionally caps the
- * store so a long session cannot grow it until the shared origin quota is full
- * (which would also break gallery writes).
+ * Runs on startup after hydration. The age grace avoids deleting an asset
+ * another open tab just wrote before its card list reached localStorage, and
+ * an asset a back/forward-cached page (or an open viewer) may still need.
+ * `maxCount` is kept for callers but deliberately does not evict inside the
+ * grace window: cross-tab references cannot be proven absent from this tab.
  *
  * `prefixes` scopes the sweep to the caller's own keys: the free canvas and the
  * workflow share this store, and a canvas sweep must never delete a workflow
@@ -65,28 +66,20 @@ export async function pruneCanvasAssets(
   );
 
   const orphans: string[] = [];
-  let kept = owned.length;
-  const stale: typeof records = [];
 
   for (const record of owned) {
     if (valid.has(record.key)) continue;
     if (record.createdAt < cutoff) {
       orphans.push(record.key);
-      kept -= 1;
-    } else {
-      stale.push(record);
     }
   }
 
-  // Still above the cap: evict the oldest unreferenced assets, even inside the
-  // grace window. Referenced assets are never touched here.
-  if (kept > maxCount) {
-    stale.sort((a, b) => a.createdAt - b.createdAt);
-    const excess = kept - maxCount;
-    for (const record of stale.slice(0, excess)) {
-      orphans.push(record.key);
-    }
-  }
+  // A count cap used to evict un-referenced assets even inside the grace
+  // window. That silently deleted blobs another tab (whose card list had not
+  // reached localStorage yet) or a back/forward-cached page still referenced.
+  // Only age-eligible orphans are reclaimed now; `maxCount` remains in the
+  // signature for callers but no longer overrides the grace period.
+  void maxCount;
 
   if (orphans.length === 0) return 0;
   const tx = db.transaction(CANVAS_ASSET_STORE, "readwrite");

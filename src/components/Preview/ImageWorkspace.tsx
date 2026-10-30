@@ -72,7 +72,11 @@ import {
   isFullCrop,
   loadImageElement,
 } from "../../utils/composeMain";
-import { getImageDimensions } from "../../utils/cardSource";
+import {
+  getImageDimensions,
+  leaseObjectUrl,
+  releaseObjectUrlLease,
+} from "../../utils/cardSource";
 import {
   dataUrlToBlob,
   downloadFile,
@@ -426,6 +430,14 @@ export function ImageWorkspace({
   }, [isDirty, onDirtyChange]);
 
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+
+  // Keep the source URL alive while this workspace shows it. A Simple input or
+  // canvas card can be removed behind the dialog; revoking its blob URL here
+  // would leave a broken preview and a failed comparison/download.
+  useEffect(() => {
+    leaseObjectUrl(image.url);
+    return () => releaseObjectUrlLease(image.url);
+  }, [image.url]);
 
   // Stage box: fit the working frame inside the measured area. Layout size and
   // the visual (zoomed) size stay separate so crop overlays can be drawn in
@@ -894,7 +906,12 @@ export function ImageWorkspace({
 
   const requestApply = (which: "primary" | "alternate") => {
     if (!isDirty || isApplying || runPhase === "running") return;
-    if (image.editable?.discardWarning) {
+    // The confirmation describes the primary destination. An alternate that
+    // only adds a copy/reference must not claim it will replace the base.
+    if (
+      which === "primary" &&
+      (image.editable?.discardWarning || image.editable?.applyConfirm)
+    ) {
       setPendingApply(which);
       setMaskConfirmOpen(true);
       return;
@@ -953,6 +970,15 @@ export function ImageWorkspace({
     const handleKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmIntent !== null || maskConfirmOpen) return;
+      // A card-level confirmation (e.g. "set as main" / "discard mask") can be
+      // open *inside* the lightbox. Radix owns Esc for it; closing the whole
+      // workspace here would leave the confirmation orphaned on the canvas.
+      if (typeof document !== "undefined") {
+        const openDialogs = document.querySelectorAll(
+          '[data-slot="dialog-content"][data-state="open"], [role="alertdialog"][data-state="open"]'
+        );
+        if (openDialogs.length > 1) return;
+      }
       const target = event.target as HTMLElement | null;
       if (
         target &&
@@ -2726,9 +2752,18 @@ export function ImageWorkspace({
 
       <ConfirmDialog
         open={maskConfirmOpen}
-        title={t("preview.edit.discardMaskTitle")}
-        description={t("preview.edit.discardMaskDesc")}
-        confirmLabel={t("preview.edit.discardMaskConfirm")}
+        title={
+          image.editable?.applyConfirm?.title ??
+          t("preview.edit.discardMaskTitle")
+        }
+        description={
+          image.editable?.applyConfirm?.description ??
+          t("preview.edit.discardMaskDesc")
+        }
+        confirmLabel={
+          image.editable?.applyConfirm?.confirmLabel ??
+          t("preview.edit.discardMaskConfirm")
+        }
         busy={isApplying}
         onCancel={() => {
           setPendingApply(null);

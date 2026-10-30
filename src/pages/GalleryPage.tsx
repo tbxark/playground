@@ -19,6 +19,7 @@ import {
   StarIcon,
   Trash2Icon,
   XIcon,
+  ZapIcon,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -32,7 +33,7 @@ import { persistWorkflowImage, useWorkflowStore } from "../stores/useWorkflowSto
 import { usePromptStore } from "../stores/usePromptStore";
 import { getRuntimeImageState } from "../services/runtimeConfig";
 import { HistoryRecord } from "../services/types";
-import { blobToDataUrl, downloadFile, formatDate } from "../utils/file";
+import { downloadFile, formatDate } from "../utils/file";
 import { cn } from "@/utils/cn";
 
 /**
@@ -92,7 +93,14 @@ export function GalleryPage() {
   } = useGalleryStore();
 
   const setMainFromGallery = useFreeCanvasStore((state) => state.setMainFromGallery);
+  const setSimpleBaseFromBlob = useFreeCanvasStore(
+    (state) => state.setSimpleBaseFromBlob
+  );
   const maskStrokes = useFreeCanvasStore((state) => state.maskStrokes);
+  const isMaskInverted = useFreeCanvasStore((state) => state.isMaskInverted);
+  const simpleInputCount = useFreeCanvasStore(
+    (state) => state.simpleImages.length
+  );
   const openLightbox = useLightboxStore((state) => state.open);
   const { addNode } = useWorkflowStore();
   const { setPrompt, setNegativePrompt, setSize, setResolution, setSeed } = usePromptStore();
@@ -102,6 +110,12 @@ export function GalleryPage() {
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [pendingMainRecord, setPendingMainRecord] = useState<HistoryRecord | null>(null);
+  const [pendingMainMaskVersion, setPendingMainMaskVersion] = useState<
+    number | undefined
+  >(undefined);
+  const [pendingSimpleRecord, setPendingSimpleRecord] =
+    useState<HistoryRecord | null>(null);
+  const [loadingSimple, setLoadingSimple] = useState(false);
   const [loadingMain, setLoadingMain] = useState(false);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [pendingDeleteRecord, setPendingDeleteRecord] = useState<HistoryRecord | null>(null);
@@ -128,7 +142,10 @@ export function GalleryPage() {
 
   // Action: atomically replace the free-canvas main image, committing the
   // current main's crop/rotate/annotation edits first.
-  const loadIntoFreeCanvas = async (record: HistoryRecord) => {
+  const loadIntoFreeCanvas = async (
+    record: HistoryRecord,
+    options?: { discardMask?: boolean; maskVersion?: number }
+  ) => {
     setLoadingMain(true);
     try {
       const ok = await setMainFromGallery({
@@ -137,12 +154,15 @@ export function GalleryPage() {
         name: t("gallery.artworkName", { model: record.model, id: record.nanoid }),
         prompt: record.prompt,
         createdAt: record.createdAt,
-        discardMask: true,
+        // Only a confirmation the user actually saw may discard the mask.
+        discardMask: options?.discardMask ?? false,
+        maskVersion: options?.maskVersion,
       });
       if (ok) {
         setInspectRecord(null);
         setPendingMainRecord(null);
-        navigate("/");
+        setPendingMainMaskVersion(undefined);
+        navigate("/", { state: { fitAfterMainSwitch: true } });
       }
     } finally {
       setLoadingMain(false);
@@ -150,11 +170,37 @@ export function GalleryPage() {
   };
 
   const handleLoadIntoFreeCanvas = (record: HistoryRecord) => {
-    if (maskStrokes.length > 0) {
+    if (maskStrokes.length > 0 || isMaskInverted) {
+      setPendingMainMaskVersion(useFreeCanvasStore.getState().maskVersion);
       setPendingMainRecord(record);
       return;
     }
-    void loadIntoFreeCanvas(record);
+    void loadIntoFreeCanvas(record, { discardMask: false });
+  };
+
+  const loadIntoSimple = async (record: HistoryRecord) => {
+    setLoadingSimple(true);
+    try {
+      const ok = await setSimpleBaseFromBlob({
+        blob: record.imageBlob,
+        name: t("gallery.artworkName", { model: record.model, id: record.nanoid }),
+      });
+      if (ok) {
+        setInspectRecord(null);
+        setPendingSimpleRecord(null);
+        navigate("/simple");
+      }
+    } finally {
+      setLoadingSimple(false);
+    }
+  };
+
+  const handleUseAsSimpleInput = (record: HistoryRecord) => {
+    if (simpleInputCount > 0) {
+      setPendingSimpleRecord(record);
+      return;
+    }
+    void loadIntoSimple(record);
   };
 
   // Action: Send to the Workflow as an image node and navigate to /workflow
@@ -678,6 +724,23 @@ export function GalleryPage() {
                     {t("gallery.loadFreeCanvasTitle")}
                   </Button>
 
+                  {/* Saved results survive a refresh even though the queue does
+                      not; this is the persistent path back into Simple input. */}
+                  <Button
+                    variant="outline"
+                    onClick={() => handleUseAsSimpleInput(inspected)}
+                    disabled={loadingSimple}
+                    title={t("gallery.useAsSimpleInputTitle")}
+                    className="h-9 w-full gap-1.5 rounded-lg text-xs"
+                  >
+                    {loadingSimple ? (
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                    ) : (
+                      <ZapIcon className="size-3.5 text-amber-500" />
+                    )}
+                    {t("gallery.useAsSimpleInput")}
+                  </Button>
+
                   <div className="grid grid-cols-2 gap-2">
                     <Button
                       variant="outline"
@@ -737,9 +800,29 @@ export function GalleryPage() {
         description={t("freeCanvas.cards.galleryLoadDesc")}
         confirmLabel={t("freeCanvas.cards.discardMaskConfirm")}
         busy={loadingMain}
-        onCancel={() => setPendingMainRecord(null)}
+        onCancel={() => {
+          setPendingMainRecord(null);
+          setPendingMainMaskVersion(undefined);
+        }}
         onConfirm={() => {
-          if (pendingMainRecord) void loadIntoFreeCanvas(pendingMainRecord);
+          if (pendingMainRecord) {
+            void loadIntoFreeCanvas(pendingMainRecord, {
+              discardMask: true,
+              maskVersion: pendingMainMaskVersion,
+            });
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingSimpleRecord)}
+        title={t("simple.replaceBaseTitle")}
+        description={t("simple.replaceBaseDesc")}
+        confirmLabel={t("simple.replaceBaseConfirm")}
+        busy={loadingSimple}
+        onCancel={() => setPendingSimpleRecord(null)}
+        onConfirm={() => {
+          if (pendingSimpleRecord) void loadIntoSimple(pendingSimpleRecord);
         }}
       />
 

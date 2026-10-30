@@ -22,7 +22,7 @@ export function useResultIngestion() {
   useEffect(() => {
     tasks.forEach((task) => {
       if (task.status !== "done" || !task.result) return;
-      void addResultCard(task.result, task.id);
+      void addResultCard(task.result, task.id, { ingest: true });
       syncResultSaveState(task.result);
     });
   }, [tasks, addResultCard, syncResultSaveState]);

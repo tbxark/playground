@@ -23,10 +23,16 @@ export type LightboxEditOutput = {
 /** Returning `false` keeps the editor open (the host declined the result). */
 export type LightboxEditResult = boolean | void;
 
+export type LightboxApplyConfirm = {
+  title: string;
+  description?: string;
+  confirmLabel: string;
+};
+
 /**
  * Opt-in single-image editing. The viewer stays generic: the host names the
  * apply action and decides where the new bitmap goes (replace a canvas card,
- * add a card, save a gallery work, …).
+ * add a card, save a gallery work, replace a Simple input, …).
  */
 export type LightboxEditable = {
   /** Primary apply label, e.g. "Apply to this card". */
@@ -44,6 +50,12 @@ export type LightboxEditable = {
    * The editor confirms before discarding it.
    */
   discardWarning?: boolean;
+  /**
+   * Confirmation for a destination that replaces something else (for example
+   * the first Simple input). Localized by the caller; when absent the canvas
+   * mask dialog copy is used.
+   */
+  applyConfirm?: LightboxApplyConfirm;
 };
 
 export type LightboxImage = {
@@ -60,6 +72,11 @@ export type LightboxImage = {
   editable?: LightboxEditable;
   /** Open straight into edit mode (card menu "Edit image"). */
   initialMode?: "view" | "edit";
+  /**
+   * The URL was created just for this viewer (e.g. a queue result's Blob).
+   * Release it when the viewer closes or switches images.
+   */
+  revokeOnClose?: boolean;
 };
 
 type LightboxState = {

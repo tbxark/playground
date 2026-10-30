@@ -46,7 +46,28 @@ export function useGenerateAction(mode: GenerateMode = "canvas") {
       }
 
       const prompt = promptState.prompt.trim();
-      const imageUrls = await canvas.resolveSimpleImageUrls();
+      if (
+        canvas.simpleImages.length > 0 &&
+        (!canvas.isHydrated || canvas.hydrationError)
+      ) {
+        // Never enqueue a request with inputs whose IndexedDB restore has not
+        // finished (or failed): that would silently change the base image.
+        toast.warning(t("simple.restoreBlockedHint"));
+        return [];
+      }
+      const request = await canvas.resolveSimpleImageRequest();
+      const usableSlots = request.slots.filter((slot) => slot.url);
+      const baseMissing = request.total > 0 && !request.slots[0]?.url;
+      if (
+        baseMissing &&
+        usableSlots.some((slot) => slot.index > 0)
+      ) {
+        // Sending the later images would silently change which image occupies
+        // slot 1. Make the user remove the broken base (or clear the list).
+        toast.warning(t("simple.baseUnavailableHint"));
+        return [];
+      }
+      const imageUrls = request.urls;
       if (!prompt && imageUrls.length === 0) {
         toast.warning(t("simple.needInput"));
         return [];

@@ -75,3 +75,11 @@ export type ServerAssistantResponse = {
 export type ServerErrorBody = {
   error: string;
 };
+
+/**
+ * The managed upstream is the official OpenAI API and the request carries
+ * image inputs (imageUrls/maskUrl). `/images/generations` has no image inputs
+ * there, and this server deliberately does not implement `/images/edits`;
+ * forwarding the request would silently generate from text only.
+ */
+export const SERVER_ERROR_IMAGE_INPUT_UNSUPPORTED = "image_input_unsupported";

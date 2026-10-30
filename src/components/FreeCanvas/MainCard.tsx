@@ -96,6 +96,9 @@ export const MainCard = memo(function MainCard({
   const [loadError, setLoadError] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const [confirmMaskVersion, setConfirmMaskVersion] = useState<number | null>(
+    null
+  );
   const [busy, setBusy] = useState(false);
   const [copying, setCopying] = useState(false);
   const [menuPosition, setMenuPosition] = useState<{
@@ -166,7 +169,7 @@ export const MainCard = memo(function MainCard({
   };
 
   const handleCanvasPointerDown = (event: React.PointerEvent) => {
-    if (event.button !== 0 || isSpaceDown) return;
+    if (event.button !== 0 || isSpaceDown || isCommittingMain) return;
     selectCard(card.id);
     if (activeTool !== "inpaint") return;
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
@@ -259,12 +262,22 @@ export const MainCard = memo(function MainCard({
     }
   };
 
+  const requestClearMain = () => {
+    setConfirmMaskVersion(useFreeCanvasStore.getState().maskVersion);
+    setConfirmClearOpen(true);
+  };
+
   const handleConfirmClear = async () => {
     setBusy(true);
-    const ok = await clearMain({ discardMask: maskStrokes.length > 0 });
+    const ok = await clearMain({
+      discardMask: true,
+      maskVersion:
+        confirmMaskVersion !== null ? confirmMaskVersion : undefined,
+    });
     setBusy(false);
     if (ok) {
       setConfirmClearOpen(false);
+      setConfirmMaskVersion(null);
       // Also closes the viewer when the action came from there.
       closeLightbox();
     }
@@ -289,7 +302,8 @@ export const MainCard = memo(function MainCard({
         cardId: card.id,
         name: card.name,
         isMain: true,
-        discardWarning: maskStrokes.length > 0,
+        discardWarning: maskStrokes.length > 0 || isMaskInverted,
+        maskVersion: useFreeCanvasStore.getState().maskVersion,
       }),
       actions: [
         {
@@ -297,8 +311,9 @@ export const MainCard = memo(function MainCard({
           label: t("freeCanvas.cards.unsetMain"),
           keepOpen: true,
           onSelect: async () => {
-            if (useFreeCanvasStore.getState().maskStrokes.length > 0) {
-              setConfirmClearOpen(true);
+            const state = useFreeCanvasStore.getState();
+            if (state.maskStrokes.length > 0 || state.isMaskInverted) {
+              requestClearMain();
               return;
             }
             const ok = await clearMain({ discardMask: false });
@@ -444,7 +459,7 @@ export const MainCard = memo(function MainCard({
             label={t("freeCanvas.cards.unsetMain")}
             destructive
             disabled={isCommittingMain}
-            onSelect={() => setConfirmClearOpen(true)}
+            onSelect={() => requestClearMain()}
           />
         </CanvasContextMenu>
 
@@ -471,7 +486,9 @@ export const MainCard = memo(function MainCard({
               <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
                 {loadError && card.assetState !== "missing"
                   ? t("freeCanvas.cards.loadFailedDesc")
-                  : t("freeCanvas.cards.missingDesc")}
+                  : card.persist === "memory"
+                    ? t("freeCanvas.cards.sessionOnlyHint")
+                    : t("freeCanvas.cards.missingDesc")}
               </p>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-1.5">
@@ -500,7 +517,7 @@ export const MainCard = memo(function MainCard({
                 type="button"
                 size="xs"
                 variant="destructive"
-                onClick={() => setConfirmClearOpen(true)}
+                onClick={() => requestClearMain()}
               >
                 {t("freeCanvas.cards.unsetMain")}
               </Button>
@@ -561,13 +578,16 @@ export const MainCard = memo(function MainCard({
         open={confirmClearOpen}
         title={t("freeCanvas.cards.clearMainTitle")}
         description={
-          maskStrokes.length > 0
+          maskStrokes.length > 0 || isMaskInverted
             ? t("freeCanvas.cards.discardMaskDesc")
             : t("freeCanvas.cards.clearMainDesc")
         }
         confirmLabel={t("freeCanvas.cards.unsetMain")}
         busy={busy || isCommittingMain}
-        onCancel={() => setConfirmClearOpen(false)}
+        onCancel={() => {
+          setConfirmClearOpen(false);
+          setConfirmMaskVersion(null);
+        }}
         onConfirm={() => void handleConfirmClear()}
       />
     </>

@@ -188,6 +188,67 @@ func TestManagedGenerateInjectsModelAndKey(t *testing.T) {
 	}
 }
 
+func TestManagedGenerateRejectsImageInputOnOfficialEndpoint(t *testing.T) {
+	cfg := managedTestConfig(t, "https://api.openai.com/v1")
+	server := newTestServer(t, cfg)
+
+	request := managedRequest(t, cfg, http.MethodPost, server.URL+managedGeneratePath, map[string]any{
+		"model":     "flux-1-dev",
+		"prompt":    "a cat",
+		"imageUrls": []string{"data:image/png;base64,AAAA"},
+		"size":      "1:1",
+	})
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", response.StatusCode)
+	}
+	if got := decodeBody[errorBody](t, response).Error; got != errorImageInputUnsupported {
+		t.Errorf("error = %q, want %q", got, errorImageInputUnsupported)
+	}
+}
+
+func TestManagedGenerateForwardsImageInputsOnGateway(t *testing.T) {
+	recorder := &captureRecorder{}
+	upstreamServer := httptest.NewServer(recorder.handler(http.StatusOK, `{"data":[{"url":"https://example.com/a.png"}]}`))
+	defer upstreamServer.Close()
+	cfg := managedTestConfig(t, upstreamServer.URL)
+	server := newTestServer(t, cfg)
+
+	request := managedRequest(t, cfg, http.MethodPost, server.URL+managedGeneratePath, map[string]any{
+		"model":     "flux-1-dev",
+		"prompt":    "a cat",
+		"imageUrls": []string{"data:image/png;base64,AAAA"},
+		"size":      "1:1",
+	})
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.StatusCode)
+	}
+	requests := recorder.requests()
+	if len(requests) != 1 {
+		t.Fatalf("upstream calls = %d, want 1", len(requests))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(requests[0].body), &payload); err != nil {
+		t.Fatalf("decode upstream payload: %v", err)
+	}
+	urls, ok := payload["image_urls"].([]any)
+	if !ok || len(urls) != 1 || urls[0] != "data:image/png;base64,AAAA" {
+		t.Errorf("image_urls = %v", payload["image_urls"])
+	}
+	if payload["image"] != "data:image/png;base64,AAAA" {
+		t.Errorf("single-image alias = %v", payload["image"])
+	}
+}
+
 func TestManagedGenerateRejectsUnknownModel(t *testing.T) {
 	recorder := &captureRecorder{}
 	upstreamServer := httptest.NewServer(recorder.handler(http.StatusOK, `{}`))

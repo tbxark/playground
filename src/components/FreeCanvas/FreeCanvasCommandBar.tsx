@@ -162,6 +162,7 @@ export function FreeCanvasCommandBar() {
     cards,
     main,
     maskStrokes,
+    isMaskInverted,
     isBarCollapsed,
     setIsBarCollapsed,
     clearMain,
@@ -173,6 +174,7 @@ export function FreeCanvasCommandBar() {
       cards: state.cards,
       main: state.cards.find((card) => card.role === "main"),
       maskStrokes: state.maskStrokes,
+      isMaskInverted: state.isMaskInverted,
       isBarCollapsed: state.isBarCollapsed,
       setIsBarCollapsed: state.setIsBarCollapsed,
       clearMain: state.clearMain,
@@ -212,6 +214,7 @@ export function FreeCanvasCommandBar() {
   const [busy, setBusy] = useState(false);
 
   const hasInpaintMask = maskStrokes.length > 0;
+  const hasPendingMask = hasInpaintMask || isMaskInverted;
   const hasImage = Boolean(main);
 
   let modeTitle = t("freeCanvas.modeInspire");
@@ -315,7 +318,7 @@ export function FreeCanvasCommandBar() {
 
   const handleConfirmClear = async () => {
     setBusy(true);
-    const ok = await clearMain({ discardMask: maskStrokes.length > 0 });
+    const ok = await clearMain({ discardMask: hasPendingMask });
     setBusy(false);
     if (ok) setConfirmClearOpen(false);
   };
@@ -927,7 +930,7 @@ export function FreeCanvasCommandBar() {
         open={confirmClearOpen}
         title={t("freeCanvas.cards.clearMainTitle")}
         description={
-          maskStrokes.length > 0
+          hasPendingMask
             ? t("freeCanvas.cards.discardMaskDesc")
             : t("freeCanvas.cards.clearMainDesc")
         }

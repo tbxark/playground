@@ -21,6 +21,7 @@ import { useShallow } from "zustand/react/shallow";
 import {
   CanvasCard,
   MAX_REFERENCE_PARTICIPATION,
+  isSameImage,
   useFreeCanvasStore,
 } from "../../stores/useFreeCanvasStore";
 import {
@@ -81,7 +82,6 @@ export const ImageCard = memo(function ImageCard({
     retrySaveCard,
     moveReference,
     setCardRole,
-    maskStrokes,
     isCommittingMain,
     isHydrated,
   } = useFreeCanvasStore(
@@ -96,7 +96,6 @@ export const ImageCard = memo(function ImageCard({
       retrySaveCard: state.retrySaveCard,
       moveReference: state.moveReference,
       setCardRole: state.setCardRole,
-      maskStrokes: state.maskStrokes,
       isCommittingMain: state.isCommittingMain,
       isHydrated: state.isHydrated,
     }))
@@ -114,6 +113,9 @@ export const ImageCard = memo(function ImageCard({
   const [retryKey, setRetryKey] = useState(0);
   const [busy, setBusy] = useState(false);
   const [confirmPromote, setConfirmPromote] = useState(false);
+  const [promoteMaskVersion, setPromoteMaskVersion] = useState<number | null>(
+    null
+  );
   const [menuPosition, setMenuPosition] = useState<{
     x: number;
     y: number;
@@ -124,6 +126,7 @@ export const ImageCard = memo(function ImageCard({
   const isReference = card.role === "reference";
   const isResult = card.role === "result";
   const isFree = card.role === "free";
+  const ownsResult = Boolean(card.ownsResult);
   const participates =
     isReference && referenceIndex < MAX_REFERENCE_PARTICIPATION;
   const isAlternate = isReference && !participates;
@@ -198,12 +201,27 @@ export const ImageCard = memo(function ImageCard({
       // viewer is not a dead end that just closes the image.
       keepOpen: true,
       onSelect: async () => {
-        if (useFreeCanvasStore.getState().maskStrokes.length > 0) {
+        const state = useFreeCanvasStore.getState();
+        const main = state.cards.find((item) => item.role === "main");
+        if (isSameImage(card, main)) {
+          toast.info(t("freeCanvas.cards.alreadyMain"));
+          return;
+        }
+        if (state.maskStrokes.length > 0 || state.isMaskInverted) {
+          setPromoteMaskVersion(state.maskVersion);
           setConfirmPromote(true);
           return;
         }
         const ok = await promoteToMain(card.id, { discardMask: false });
-        if (ok) closeLightbox();
+        if (ok) {
+          // Frame both the new main and the old main that stepped aside as a
+          // free card; focusing only the target leaves the free card under the
+          // results dock.
+          bridge?.focusCards(
+            [card.id, main?.id].filter((id): id is string => Boolean(id))
+          );
+          closeLightbox();
+        }
       },
     });
     if (isResult) {
@@ -253,18 +271,39 @@ export const ImageCard = memo(function ImageCard({
 
   const doPromote = async (discardMask: boolean) => {
     setBusy(true);
-    const ok = await promoteToMain(card.id, { discardMask });
+    const previousMainId = useFreeCanvasStore
+      .getState()
+      .cards.find((item) => item.role === "main")?.id;
+    const ok = await promoteToMain(card.id, {
+      discardMask,
+      maskVersion:
+        discardMask && promoteMaskVersion !== null
+          ? promoteMaskVersion
+          : undefined,
+    });
     setBusy(false);
     if (ok) {
       setConfirmPromote(false);
+      setPromoteMaskVersion(null);
       // A no-op when the viewer is closed; closes it after promoting from there.
       closeLightbox();
-      bridge?.focusCard(card.id);
+      bridge?.focusCards(
+        [card.id, previousMainId].filter(
+          (id): id is string => Boolean(id)
+        )
+      );
     }
   };
 
   const handlePromote = () => {
-    if (maskStrokes.length > 0) {
+    const state = useFreeCanvasStore.getState();
+    const main = state.cards.find((item) => item.role === "main");
+    if (isSameImage(card, main)) {
+      toast.info(t("freeCanvas.cards.alreadyMain"));
+      return;
+    }
+    if (state.maskStrokes.length > 0 || state.isMaskInverted) {
+      setPromoteMaskVersion(state.maskVersion);
       setConfirmPromote(true);
       return;
     }
@@ -388,7 +427,7 @@ export const ImageCard = memo(function ImageCard({
           >
             {card.name}
           </span>
-          {isResult && (
+          {ownsResult && (
             <span
               className={cn("size-1.5 shrink-0 rounded-full", saveDot)}
               title={
@@ -444,7 +483,9 @@ export const ImageCard = memo(function ImageCard({
             <p className="text-[9px] leading-relaxed text-zinc-400">
               {loadError && card.assetState !== "missing"
                 ? t("freeCanvas.cards.loadFailedDesc")
-                : t("freeCanvas.cards.missingDescShort")}
+                : card.persist === "memory"
+                  ? t("freeCanvas.cards.sessionOnlyHint")
+                  : t("freeCanvas.cards.missingDescShort")}
             </p>
             <div className="flex flex-wrap justify-center gap-1">
               <button
@@ -487,7 +528,7 @@ export const ImageCard = memo(function ImageCard({
           </button>
         )}
 
-        {isResult &&
+        {ownsResult &&
           saveStatus !== "saved" &&
           saveStatus !== "local" &&
           !showMissing &&
@@ -633,7 +674,10 @@ export const ImageCard = memo(function ImageCard({
         description={t("freeCanvas.cards.discardMaskDesc")}
         confirmLabel={t("freeCanvas.cards.discardMaskConfirm")}
         busy={busy}
-        onCancel={() => setConfirmPromote(false)}
+        onCancel={() => {
+          setConfirmPromote(false);
+          setPromoteMaskVersion(null);
+        }}
         onConfirm={() => void doPromote(true)}
       />
     </>

@@ -5,7 +5,7 @@ A fully client-side AI image-generation workbench built with **React 19 + shadcn
 ## Three workspaces
 
 - **Free Canvas (`/`)** — the main studio: the main image, reference images and generated results all live on one pannable/zoomable canvas, with inpaint masking plus a full-screen image workspace for per-image changes.
-- **Simple (`/simple`)** — the most direct generate entry: both images and prompt are optional. Generation history shares the same Results panel and queue data source as the free canvas.
+- **Simple (`/simple`)** — the most direct generate entry: both images and prompt are optional. Generation history shares the same Results panel and queue data source as the free canvas. A result opens in the same image workspace, and an applied edit can become the base image or an extra reference input; saved results can be reused from the gallery after a reload.
 - **Workflow (`/workflow`)** — node-based workflow: prompt, reference image, inspiration assistant, generation and preview nodes wired together.
 
 The legacy `/canvas` path redirects to `/workflow`, and `/?mode=simple` redirects to `/simple`, so old bookmarks keep working. `/gallery` and `/settings` remain standalone pages. On first launch (no image or assistant key stored, and the guide never finished or skipped), the app opens the `/onboarding` guide, which can be reopened from Settings → System.
@@ -38,23 +38,25 @@ The legacy `/canvas` path redirects to `/workflow`, and `/?mode=simple` redirect
   - The main image uses a strong solid border with a "Main" badge; reference images use a dashed, muted border with a "Reference n" badge; generated results use their own border with a "Result" badge.
   - Cards can be selected and moved by dragging the card header; drag empty space or hold Space to pan, ⌘/Ctrl + wheel zooms around the cursor, and a plain wheel pans.
   - Clicking a result or reference no longer implicitly replaces the main image: it opens the shared image workspace (tools, original comparison, download, set as reference, …), and only an explicit "Set as main" continues editing. The original stays on the canvas for comparison.
-  - Switching or clearing the main image keeps the bitmap as-is; the pending inpaint mask is discarded and requires confirmation first.
+  - Switching the main image keeps the old bitmap as a free card (and clears any pending inpaint mask after confirmation). Clearing the main image keeps its historical "reference or result" behavior.
   - The empty canvas offers guidance: upload an image, generate straight from a prompt, and an explanation of what reference images do and how many participate.
 - **Image workspace (viewer + editor in one)**:
   - One PS-like shell for every lightbox entry: a left tool rail (View, Crop, Margin, Annotate, Remove BG, Upscale), a contextual options bar, the canvas, a right inspector with image info, pending changes and caller actions, and a status bar with zoom and original comparison. There is no separate "edit mode" to enter or leave.
   - Any image opened — main, reference, result or free card — can be cropped (with ratios, 90° rotation and flips), given a local margin, annotated, background-removed, or upscaled with on-device tools (MODNet via transformers.js and pica Lanczos). Drag on the image to draw a crop, wheel-zoom at the cursor, Space/middle-drag to pan, and use `V C E B R U` for the tools.
   - "Apply" replaces that card's bitmap in one undoable step and keeps the pre-edit original for comparison; the card menu also offers "Apply as new card" to keep the original on the canvas. "Reset all" discards pending edits without closing the workspace.
+  - In Simple mode the same workspace is opened with a destination-specific apply: "Apply and use as base" replaces the first input (asking first), and "Apply and add as reference" appends when a slot is free. Editing an existing input keeps its id, name and order.
   - Nothing is uploaded. Background removal runs in a worker; its runtime and model are downloaded once and cached by the browser, while upscaling is immediate and offline. Transparent results get a checkerboard preview.
 - **Closed action loop**:
   - Results land on the canvas automatically once generated (idempotent by `result.nanoid`), with one click to explicitly set as main image, set as reference, or locate the card.
   - Results that were not saved to the gallery keep their local Blob and metadata, so "retry save" works from the result card or the Results panel even after a refresh.
+  - Saved results survive a refresh through the gallery: "Use as Simple input" replaces the current Simple base and opens `/simple`, so the queue not being persisted no longer blocks reuse.
   - One click sends a result to the workflow as an image node for further orchestration.
   - The workspace can toggle the original comparison for any edited image (only while no edits are pending); reference thumbnails open the large view.
   - One click restores all generation parameters into the command bar.
 - **Local, intelligent asset gallery (IndexedDB)**:
   - Zero server dependency: result blobs and full metadata persist in the user's browser.
   - Keyword search, model filtering and favorites (star). Clicking a detail image opens the full-screen lightbox with the same zoom and close gestures used by the canvas and workflow.
-  - "Load as main image" replaces the current main card atomically; an existing mask is confirmed first.
+  - "Load as main image" replaces the current main card atomically (the previous main becomes a free card); an existing mask is confirmed first.
   - Automatic LRU quota trimming plus one-click ZIP export (all images with a parameters JSON).
 - **Security and privacy**:
   - All API keys and custom settings live in local `localStorage`, with one-click export/import backup.
