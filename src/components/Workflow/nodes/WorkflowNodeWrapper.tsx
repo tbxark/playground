@@ -1,5 +1,5 @@
-import React from "react";
-import { Handle, Position } from "@xyflow/react";
+import React, { useEffect } from "react";
+import { Handle, Position, useUpdateNodeInternals } from "@xyflow/react";
 import { useTranslation } from "react-i18next";
 import { CopyIcon, Trash2Icon } from "lucide-react";
 import {
@@ -31,7 +31,8 @@ export function WorkflowNodeWrapper({
   children,
   headerRight,
 }: WorkflowNodeWrapperProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const updateNodeInternals = useUpdateNodeInternals();
   const {
     selectedNodeId,
     setSelectedNodeId,
@@ -43,6 +44,11 @@ export function WorkflowNodeWrapper({
   const isSelected = selectedNodeId === node.id;
   const inputPorts = ports.filter((p) => p.direction === "input");
   const outputPorts = ports.filter((p) => p.direction === "output");
+  const portRowCount = Math.max(inputPorts.length, outputPorts.length);
+
+  useEffect(() => {
+    updateNodeInternals(node.id);
+  }, [node.id, node.width, i18n.resolvedLanguage, portRowCount, updateNodeInternals]);
 
   return (
     <div
@@ -59,59 +65,6 @@ export function WorkflowNodeWrapper({
       )}
       style={{ width: `${node.width || 320}px` }}
     >
-      {/* Input Handles */}
-      {inputPorts.map((port, idx) => (
-        <div
-          key={port.id}
-          style={{ top: `${56 + idx * 36}px` }}
-          className="absolute -left-3 -translate-y-1/2 flex items-center gap-1 z-20 pointer-events-auto"
-        >
-          <Handle
-            type="target"
-            position={Position.Left}
-            id={port.id}
-            className={cn(
-              "!size-4 !rounded-full !border-2 !shadow-md transition-all !static !transform-none cursor-crosshair",
-              port.type === "text"
-                ? "!bg-purple-950 !border-purple-400 !shadow-purple-500/30"
-                : "!bg-cyan-950 !border-cyan-400 !shadow-cyan-500/30"
-            )}
-            title={t("workflow.wrapper.inputPortTitle", {
-              name: t(port.name),
-              type: port.type === "text" ? t("workflow.wrapper.portTypeText") : t("workflow.wrapper.portTypeImage"),
-            })}
-          />
-          <span className="text-[10px] text-zinc-400 font-mono pointer-events-none pl-1">
-            {t(port.name)}
-          </span>
-        </div>
-      ))}
-
-      {/* Output Handles */}
-      {outputPorts.map((port, idx) => (
-        <div
-          key={port.id}
-          style={{ top: `${56 + idx * 36}px` }}
-          className="absolute -right-3 -translate-y-1/2 flex items-center gap-1 z-20 pointer-events-auto"
-        >
-          <span className="text-[10px] text-zinc-400 font-mono pointer-events-none pr-1">
-            {t(port.name)}
-          </span>
-          <Handle
-            type="source"
-            position={Position.Right}
-            id={port.id}
-            className={cn(
-              "!size-4 !rounded-full !border-2 !shadow-md transition-all hover:scale-125 !static !transform-none cursor-crosshair",
-              port.type === "text"
-                ? "!bg-purple-950 !border-purple-400 !shadow-purple-500/30"
-                : "!bg-cyan-950 !border-cyan-400 !shadow-cyan-500/30"
-            )}
-            title={t("workflow.wrapper.outputPortTitle", { name: t(port.name) })}
-          />
-        </div>
-      ))}
-
       {/* Node Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/5 rounded-t-3xl cursor-grab active:cursor-grabbing">
         <div className="flex items-center gap-2 min-w-0 pointer-events-none">
@@ -152,8 +105,63 @@ export function WorkflowNodeWrapper({
         </div>
       </div>
 
+      {portRowCount > 0 && (
+        <div className="pt-2">
+          {Array.from({ length: portRowCount }, (_, index) => {
+            const input = inputPorts[index];
+            const output = outputPorts[index];
+
+            return (
+              <div key={index} className="relative grid min-h-6 grid-cols-2 items-center gap-4 px-4">
+                {input ? (
+                  <div className="min-w-0">
+                    <Handle
+                      type="target"
+                      position={Position.Left}
+                      id={input.id}
+                      className={cn(
+                        "!size-4 !rounded-full !border-2 !shadow-md transition-all !pointer-events-auto cursor-crosshair",
+                        input.type === "text"
+                          ? "!bg-purple-950 !border-purple-400 !shadow-purple-500/30"
+                          : "!bg-cyan-950 !border-cyan-400 !shadow-cyan-500/30"
+                      )}
+                      title={t("workflow.wrapper.inputPortTitle", {
+                        name: t(input.name),
+                        type: input.type === "text" ? t("workflow.wrapper.portTypeText") : t("workflow.wrapper.portTypeImage"),
+                      })}
+                    />
+                    <span className="block text-[10px] leading-4 text-zinc-400 font-mono pointer-events-none break-words">
+                      {t(input.name)}
+                    </span>
+                  </div>
+                ) : <div />}
+                {output && (
+                  <div className="min-w-0 text-right">
+                    <span className="block text-[10px] leading-4 text-zinc-400 font-mono pointer-events-none break-words">
+                      {t(output.name)}
+                    </span>
+                    <Handle
+                      type="source"
+                      position={Position.Right}
+                      id={output.id}
+                      className={cn(
+                        "!size-4 !rounded-full !border-2 !shadow-md transition-all hover:scale-125 !pointer-events-auto cursor-crosshair",
+                        output.type === "text"
+                          ? "!bg-purple-950 !border-purple-400 !shadow-purple-500/30"
+                          : "!bg-cyan-950 !border-cyan-400 !shadow-cyan-500/30"
+                      )}
+                      title={t("workflow.wrapper.outputPortTitle", { name: t(output.name) })}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Node Content Body */}
-      <div className="p-4 space-y-3 nodrag nopan">
+      <div className="px-4 pb-4 pt-1 space-y-3 nodrag nopan">
         {children}
       </div>
     </div>
