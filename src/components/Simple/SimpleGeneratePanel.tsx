@@ -30,7 +30,8 @@ import { usePromptStore } from "../../stores/usePromptStore";
 import { useLightboxStore } from "../../stores/useLightboxStore";
 import { useGenerateAction } from "../../hooks/useGenerateAction";
 import { useRuntimeImageState } from "../../hooks/useRuntimeImageState";
-import { OutputFormatControls } from "@/components/FreeCanvas/OutputFormatControls";
+import { PromptImageOptions } from "@/components/ImageOptions/ImageOptionsPanel";
+import { availableResolutions, selectedResolution } from "../../../shared/imageModels";
 import { useSimpleEdit } from "../../hooks/useSimpleEdit";
 import { isImeComposing, isOverlayOpen } from "@/utils/keyboard";
 import { cn } from "@/utils/cn";
@@ -485,13 +486,13 @@ export function SimpleGeneratePanel() {
               </div>
 
               <div className="flex shrink-0 items-center gap-0.5 rounded-xl border border-white/10 bg-white/5 p-0.5">
-                {RESOLUTIONS.map((item) => (
+                {availableResolutions(selectedModel, RESOLUTIONS).map((item) => (
                   <button
                     key={item}
                     type="button"
                     className={cn(
                       "shrink-0 cursor-pointer whitespace-nowrap rounded-lg px-2 py-1 text-[11px] font-medium uppercase transition-colors",
-                      resolution === item
+                      selectedResolution(selectedModel, resolution) === item
                         ? "bg-white/20 font-bold text-white"
                         : "text-zinc-400 hover:text-white"
                     )}
@@ -543,10 +544,9 @@ export function SimpleGeneratePanel() {
               </button>
             </div>
 
-            <OutputFormatControls
+            <PromptImageOptions
               model={selectedModel}
               managed={mode === "managed"}
-              hasImageInputs={simpleImages.length > 0}
             />
 
             {showAdvanced && (

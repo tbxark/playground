@@ -20,6 +20,13 @@ import {
   type ServerManagedConfig,
 } from "../shared/contracts";
 import {
+  getImageModelCaps,
+  imageOptionFields,
+  maskFieldName,
+  sanitizeImageOptions,
+  validateImageOptions,
+} from "../shared/imageModels";
+import {
   PROMPT_ENHANCE_SYSTEM,
   PROMPT_TRANSLATE_SYSTEM,
   PROMPT_VISION_SYSTEM,
@@ -125,57 +132,6 @@ function formatSizeForModel(size: string, model: string): string {
   return size;
 }
 
-const DEFAULT_SVG_MODEL = "gpt-5.4-mini";
-
-/** GIF/SVG exist only on gpt-image-2.6 flare/sunburst; mirrors supportsRichOutput(). */
-function supportsRichOutput(model: string): boolean {
-  const id = model.toLowerCase();
-  return (
-    id.includes("gpt-image-2.6") &&
-    (id.includes("flare") || id.includes("sunburst"))
-  );
-}
-
-/** Validates the GIF/SVG fields; returns an error code or the payload fields. */
-function richOutputPayload(
-  body: ServerGenerateRequest,
-  env: ServerEnv
-): { error: string } | { fields: Record<string, unknown> } {
-  if (body.outputFormat !== "gif" && body.outputFormat !== "svg") {
-    return { error: "invalid_request" };
-  }
-  if (!supportsRichOutput(body.model)) return { error: "output_format_unsupported" };
-  if ((body.imageUrls?.length ?? 0) > 0 || body.maskUrl) {
-    return { error: "invalid_request" };
-  }
-  if (body.outputFormat === "svg") {
-    return {
-      fields: {
-        output_format: "svg",
-        svg: { model: parseOptionalModel(env.MANAGED_SVG_MODEL) ?? DEFAULT_SVG_MODEL },
-      },
-    };
-  }
-  const fields: Record<string, unknown> = { output_format: "gif" };
-  if (body.frameCount !== undefined) {
-    if (!Number.isInteger(body.frameCount) || body.frameCount < 2 || body.frameCount > 16) {
-      return { error: "invalid_request" };
-    }
-    fields.frame_count = body.frameCount;
-  }
-  if (body.frameDurationMs !== undefined) {
-    if (
-      !Number.isInteger(body.frameDurationMs) ||
-      body.frameDurationMs < 20 ||
-      body.frameDurationMs % 10 !== 0
-    ) {
-      return { error: "invalid_request" };
-    }
-    fields.frame_duration_ms = body.frameDurationMs;
-  }
-  return { fields };
-}
-
 function assistantMessages(body: ServerAssistantRequest) {
   if (body.kind === "vision") {
     return [
@@ -267,26 +223,28 @@ export function registerManagedRoutes(app: Hono, env: ServerEnv): void {
         400
       );
     }
-    const rich = body.outputFormat !== undefined;
-    const richFields = rich ? richOutputPayload(body, env) : null;
-    if (richFields && "error" in richFields) {
-      return c.json<ServerErrorBody>({ error: richFields.error }, 400);
+    if (
+      body.options !== undefined &&
+      (typeof body.options !== "object" || body.options === null || Array.isArray(body.options))
+    ) {
+      return c.json<ServerErrorBody>({ error: "invalid_request" }, 400);
     }
+    const optionsError = validateImageOptions(body.model, body.options);
+    if (optionsError) {
+      return c.json<ServerErrorBody>({ error: optionsError }, 400);
+    }
+    // gpt-image-2.5 / 2.6: the client already resolved size/resolution (GIF
+    // frame sizes, exact pixels, ext tiers); ratio conversion would break them.
+    const known = getImageModelCaps(body.model) !== null;
     const payload: Record<string, unknown> = {
       model: body.model,
       prompt: body.prompt,
       n: 1,
-      // GIF size is already the per-frame pixel size; ratio conversion would break it.
-      size:
-        body.outputFormat === "gif"
-          ? body.size
-          : formatSizeForModel(body.size, body.model),
+      size: known ? body.size : formatSizeForModel(body.size, body.model),
     };
     if (isDalle) payload.response_format = "url";
     if (!official) {
-      if (body.resolution && body.outputFormat !== "gif") {
-        payload.resolution = body.resolution;
-      }
+      if (body.resolution) payload.resolution = body.resolution;
       if (body.negativePrompt?.trim()) {
         payload.negative_prompt = body.negativePrompt.trim();
       }
@@ -300,9 +258,16 @@ export function registerManagedRoutes(app: Hono, env: ServerEnv): void {
         payload.image_urls = body.imageUrls;
         if (body.imageUrls.length === 1) payload.image = body.imageUrls[0];
       }
-      if (body.maskUrl) payload.mask = body.maskUrl;
-      if (richFields && "fields" in richFields) {
-        Object.assign(payload, richFields.fields);
+      if (body.maskUrl) payload[maskFieldName(body.model)] = body.maskUrl;
+      if (known && body.options) {
+        // The SVG text model is server-owned so users cannot pick a billed model.
+        Object.assign(
+          payload,
+          imageOptionFields(
+            sanitizeImageOptions(body.model, body.options),
+            parseOptionalModel(env.MANAGED_SVG_MODEL)
+          )
+        );
       }
     }
 

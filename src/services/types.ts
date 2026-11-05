@@ -1,4 +1,5 @@
 import type { CorsProxyMode } from "../utils/proxy";
+import type { ImageOptions } from "../../shared/imageModels";
 
 export type ProviderId = "apimart" | "openrouter" | "openai" | string;
 
@@ -28,9 +29,6 @@ export type ProviderConfig = {
   capabilities: ProviderCapabilities;
 };
 
-/** Non-default output containers offered by gpt-image-2.6 on APIMart. */
-export type OutputFormat = "default" | "gif" | "svg";
-
 export type GenerateParams = {
   providerId: string;
   model: string;
@@ -43,15 +41,11 @@ export type GenerateParams = {
   seed?: number;
   cfgScale?: number;
   steps?: number;
-  background?: "auto" | "opaque" | "transparent";
-  /** `default` keeps the provider's raster output (png). */
-  outputFormat?: OutputFormat;
-  /** GIF only: frames in the sheet (2–16). */
-  frameCount?: number;
-  /** GIF only: per-frame duration in ms (multiples of 10, at least 20). */
-  frameDurationMs?: number;
-  /** SVG only: text model that writes the SVG from the reference image. */
-  svgModel?: string;
+  /**
+   * gpt-image-2.5 / 2.6 tunables (quality, output format, GIF frames, ...).
+   * Ignored for other models; see shared/imageModels.ts.
+   */
+  options?: ImageOptions;
   corsProxy?: string;
   corsProxyMode?: CorsProxyMode;
   signal?: AbortSignal;

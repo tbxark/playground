@@ -1,9 +1,6 @@
 import type { WorkflowEdge, WorkflowNode } from "../stores/useWorkflowStore";
-import {
-  effectiveOutputFormat,
-  formatSizeForModel,
-  gifFrameSize,
-} from "../services/imageService";
+import { formatSizeForModel } from "../services/imageService";
+import { resolveImageRequest } from "../../shared/imageModels";
 import {
   PROMPT_ENHANCE_SYSTEM,
   PROMPT_TRANSLATE_SYSTEM,
@@ -436,25 +433,12 @@ function emitGenerator(
     );
   }
 
-  const outputFormat = effectiveOutputFormat(model, node.data.outputFormat);
-
   const imageParts: string[] = [];
-  const imageEdges = incomingEdges(ctx, node.id, "image");
-  if (outputFormat !== "default") {
-    // GIF/SVG are text-to-image: the runtime refuses to run with references.
-    if (imageEdges.length > 0) {
-      ctx.warnings.push({
-        key: "workflow.codeDialog.warnRichOutputImages",
-        values: { node: node.title },
-      });
-    }
-  } else {
-    for (const edge of imageEdges) {
-      const source = ctx.nodeById.get(edge.fromNodeId);
-      if (!source) continue;
-      const part = sourceImageExpression(ctx, source);
-      if (part) imageParts.push(part);
-    }
+  for (const edge of incomingEdges(ctx, node.id, "image")) {
+    const source = ctx.nodeById.get(edge.fromNodeId);
+    if (!source) continue;
+    const part = sourceImageExpression(ctx, source);
+    if (part) imageParts.push(part);
   }
 
   const promptParts: string[] = [];
@@ -487,25 +471,28 @@ function emitGenerator(
 
   const size = node.data.size?.trim() || DEFAULT_SIZE;
   const resolution = node.data.resolution?.trim() || DEFAULT_RESOLUTION;
-  // GIF size is the per-frame pixel size; ratio conversion would break it.
-  const apiSize =
-    outputFormat === "gif" ? gifFrameSize(size) : formatSizeForModel(size, model);
+  // gpt-image-2.5 / 2.6 resolve size, resolution and tunables themselves
+  // (GIF frame sizes, ext tiers, quality, output format); mirror the runtime.
+  const resolved = resolveImageRequest(
+    model,
+    size,
+    resolution,
+    node.data.imageOptions
+  );
+  const apiSize = resolved ? resolved.size : formatSizeForModel(size, model);
+  const apiResolution = resolved ? resolved.resolution : resolution;
 
   lines.push(`const ${varName} = await generateImage(imageClient, {`);
   lines.push(`  model: ${JSON.stringify(model)},`);
   lines.push(`  prompt: ${promptExpression},`);
-  lines.push(`  size: ${JSON.stringify(apiSize)},`);
-  if (outputFormat !== "gif") {
-    lines.push(`  resolution: ${JSON.stringify(resolution)},`);
+  if (apiSize) lines.push(`  size: ${JSON.stringify(apiSize)},`);
+  if (apiResolution) {
+    lines.push(`  resolution: ${JSON.stringify(apiResolution)},`);
   }
-  if (outputFormat === "gif") {
-    lines.push(`  outputFormat: "gif",`);
-    lines.push(`  frameCount: ${node.data.frameCount ?? 9},`);
-    lines.push(`  frameDurationMs: ${node.data.frameDurationMs ?? 200},`);
-  } else if (outputFormat === "svg") {
-    lines.push(`  outputFormat: "svg",`);
+  if (resolved) {
+    // Provider-specific fields (quality, output_format, frame_count, svg, ...).
     lines.push(
-      `  svgModel: ${JSON.stringify(node.data.svgModel?.trim() || "gpt-5.4-mini")},`
+      `  extra: ${JSON.stringify(resolved.fields, null, 2).replace(/\n/g, "\n  ")},`
     );
   }
   if (node.data.negativePrompt?.trim()) {
@@ -530,7 +517,11 @@ function emitGenerator(
   const fileVar = `file_${varName}`;
   lines.push(
     `const ${fileVar} = await saveImage(${varName}, ${JSON.stringify(
-      `outputs/${varName}.${outputFormat === "default" ? "png" : outputFormat}`
+      `outputs/${varName}.${
+        resolved?.options.outputFormat === "jpeg"
+          ? "jpg"
+          : (resolved?.options.outputFormat ?? "png")
+      }`
     )});`,
     `console.log("Saved:", ${fileVar});`
   );
@@ -675,12 +666,10 @@ const HELPER_BLOCKS = {
     "type GenerateImageOptions = {",
     "  model: string;",
     "  prompt: string;",
-    "  size: string;",
+    "  size?: string;",
     "  resolution?: string;",
-    '  outputFormat?: "gif" | "svg";',
-    "  frameCount?: number;",
-    "  frameDurationMs?: number;",
-    "  svgModel?: string;",
+    "  /** Provider-specific payload fields (quality, output_format, ...). */",
+    "  extra?: Record<string, unknown>;",
     "  negativePrompt?: string;",
     "  imageUrls?: string[];",
     "  seed?: number;",
@@ -696,9 +685,9 @@ const HELPER_BLOCKS = {
     "    model: options.model,",
     "    prompt: options.prompt,",
     "    n: 1,",
-    "    size: options.size,",
     '    response_format: "url",',
     "  };",
+    "  if (options.size) payload.size = options.size;",
     "  if (options.resolution) payload.resolution = options.resolution;",
     "  if (options.negativePrompt) payload.negative_prompt = options.negativePrompt;",
     "  if (typeof options.seed === \"number\") payload.seed = options.seed;",
@@ -714,16 +703,10 @@ const HELPER_BLOCKS = {
     "    payload.reference_images = options.imageUrls;",
     "  }",
     "",
-    "  if (options.outputFormat) {",
-    "    // GIF/SVG are text-to-image and reject response_format.",
+    "  if (options.extra) {",
+    "    // gpt-image-2.5 / 2.6 reject response_format.",
     "    delete payload.response_format;",
-    "    payload.output_format = options.outputFormat;",
-    '    if (options.outputFormat === "gif") {',
-    "      payload.frame_count = options.frameCount;",
-    "      payload.frame_duration_ms = options.frameDurationMs;",
-    "    } else {",
-    '      payload.svg = { model: options.svgModel ?? "gpt-5.4-mini" };',
-    "    }",
+    "    Object.assign(payload, options.extra);",
     "  }",
     "",
     "  const response = (await client.images.generate(",

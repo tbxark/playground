@@ -10,13 +10,13 @@ import {
 import { WorkflowNode, useWorkflowStore } from "../../../stores/useWorkflowStore";
 import { WorkflowNodeWrapper, WorkflowPortDef } from "./WorkflowNodeWrapper";
 import { useTranslation } from "react-i18next";
-import { effectiveOutputFormat, modelDisplayName } from "../../../services/imageService";
-import { OutputFormatFields } from "../../FreeCanvas/OutputFormatControls";
+import { modelDisplayName } from "../../../services/imageService";
+import { ImageOptionsPanel } from "../../ImageOptions/ImageOptionsPanel";
 import {
-  DEFAULT_FRAME_COUNT,
-  DEFAULT_FRAME_DURATION_MS,
-  DEFAULT_SVG_MODEL,
-} from "../../../stores/usePromptStore";
+  availableResolutions,
+  getImageModelCaps,
+  selectedResolution,
+} from "../../../../shared/imageModels";
 import { Button } from "../../ui/button";
 import { Progress } from "../../ui/progress";
 import { useFreeCanvasStore } from "../../../stores/useFreeCanvasStore";
@@ -53,7 +53,11 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
   const model = node.data.model || selectedModel || "";
   const size = node.data.size || "1:1";
   const resolution = node.data.resolution || "1k";
-  const outputFormat = effectiveOutputFormat(model, node.data.outputFormat);
+  const caps = getImageModelCaps(model);
+  const imageOptions = node.data.imageOptions ?? {};
+  // GIF sizes come from the frame rules, not the resolution tier.
+  const hideResolution =
+    imageOptions.outputFormat === "gif" && Boolean(caps) && !caps?.ext;
 
   const isRunning = node.data.status === "running";
   const isDone = node.data.status === "done";
@@ -220,15 +224,15 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
             ))}
           </div>
 
-          <div className={cn("flex items-center gap-1", outputFormat === "gif" && "hidden")}>
-            {["1k", "2k"].map((res) => (
+          <div className={cn("flex items-center gap-1", hideResolution && "hidden")}>
+            {availableResolutions(model, ["1k", "2k"]).map((res) => (
               <button
                 key={res}
                 type="button"
                 onClick={() => updateNodeData(node.id, { resolution: res })}
                 className={cn(
                   "px-1.5 py-0.5 rounded-lg text-[10px] font-mono uppercase border transition-all cursor-pointer",
-                  resolution === res
+                  selectedResolution(model, resolution) === res
                     ? "bg-white/20 border-white/30 text-white font-bold"
                     : "bg-white/5 border-transparent text-zinc-400 hover:text-white"
                 )}
@@ -239,18 +243,16 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
           </div>
         </div>
 
-        {/* gpt-image-2.6 GIF / SVG output */}
-        <OutputFormatFields
+        {/* gpt-image-2.5 / 2.6 parameters (format, quality, GIF/SVG, ...) */}
+        <ImageOptionsPanel
           model={model}
           managed={runtimeMode === "managed"}
-          hasImageInputs={imageEdges.length > 0}
-          value={{
-            outputFormat: node.data.outputFormat ?? "default",
-            frameCount: node.data.frameCount ?? DEFAULT_FRAME_COUNT,
-            frameDurationMs: node.data.frameDurationMs ?? DEFAULT_FRAME_DURATION_MS,
-            svgModel: node.data.svgModel ?? DEFAULT_SVG_MODEL,
-          }}
-          onChange={(patch) => updateNodeData(node.id, patch)}
+          value={imageOptions}
+          onChange={(patch) =>
+            updateNodeData(node.id, { imageOptions: { ...imageOptions, ...patch } })
+          }
+          size={size}
+          onSizeChange={(next) => updateNodeData(node.id, { size: next })}
         />
 
         {/* Execution Status / Progress */}

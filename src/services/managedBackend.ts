@@ -9,11 +9,10 @@ import {
   type ServerAssistantResponse,
   type ServerGenerateRequest,
 } from "../../shared/contracts";
+import { resolveImageRequest } from "../../shared/imageModels";
 import {
-  effectiveOutputFormat,
   extractImageUrl,
   extractTaskId,
-  gifFrameSize,
   pollAsyncTaskWith,
 } from "./imageService";
 import type { GenerateParams } from "./types";
@@ -48,27 +47,28 @@ async function managedError(response: Response): Promise<never> {
 }
 
 function buildGenerateRequest(params: GenerateParams): ServerGenerateRequest {
-  const outputFormat = effectiveOutputFormat(params.model, params.outputFormat);
-  const rich = outputFormat === "gif" || outputFormat === "svg";
+  const resolved = resolveImageRequest(
+    params.model,
+    params.size,
+    params.resolution,
+    params.options
+  );
+  // The server owns the SVG text model; never send the local choice.
+  const options = resolved ? { ...resolved.options } : undefined;
+  if (options) delete options.svgModel;
+  const resolution = resolved ? resolved.resolution : params.resolution;
   return {
     model: params.model,
     prompt: params.prompt,
     ...(params.negativePrompt?.trim()
       ? { negativePrompt: params.negativePrompt.trim() }
       : {}),
-    ...(!rich && params.imageUrls?.length ? { imageUrls: params.imageUrls } : {}),
-    ...(!rich && params.maskUrl ? { maskUrl: params.maskUrl } : {}),
-    size: outputFormat === "gif" ? gifFrameSize(params.size) : params.size,
-    ...(outputFormat !== "gif" && params.resolution
-      ? { resolution: params.resolution }
-      : {}),
-    ...(rich ? { outputFormat } : {}),
-    ...(outputFormat === "gif" && typeof params.frameCount === "number"
-      ? { frameCount: params.frameCount }
-      : {}),
-    ...(outputFormat === "gif" && typeof params.frameDurationMs === "number"
-      ? { frameDurationMs: params.frameDurationMs }
-      : {}),
+    ...(params.imageUrls?.length ? { imageUrls: params.imageUrls } : {}),
+    ...(params.maskUrl ? { maskUrl: params.maskUrl } : {}),
+    // An omitted size (ext GIF) travels as "auto"; the server keeps it as-is.
+    size: resolved ? (resolved.size ?? "auto") : params.size,
+    ...(resolution ? { resolution } : {}),
+    ...(options && Object.keys(options).length > 0 ? { options } : {}),
     ...(typeof params.seed === "number" ? { seed: params.seed } : {}),
     ...(typeof params.cfgScale === "number" ? { cfgScale: params.cfgScale } : {}),
     ...(typeof params.steps === "number" ? { steps: params.steps } : {}),

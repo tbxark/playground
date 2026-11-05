@@ -7,7 +7,8 @@ import {
   normalizeCorsProxy,
   normalizeCorsProxyMode,
 } from "@/utils/proxy";
-import { GenerateParams, OutputFormat } from "./types";
+import { maskFieldName, resolveImageRequest } from "../../shared/imageModels";
+import { GenerateParams } from "./types";
 
 export type ModelOption = {
   id: string;
@@ -88,82 +89,6 @@ export function formatSizeForModel(size: string, model: string): string {
   }
 
   return size;
-}
-
-/**
- * GIF/SVG output exists only on gpt-image-2.6-flare and gpt-image-2.6-sunburst.
- * Matched by containment so gateway prefixes/suffixes still resolve.
- */
-export function supportsRichOutput(model: string): boolean {
-  const id = model.toLowerCase();
-  return (
-    id.includes("gpt-image-2.6") &&
-    (id.includes("flare") || id.includes("sunburst"))
-  );
-}
-
-/** Collapses the stored choice to what the selected model can really produce. */
-export function effectiveOutputFormat(
-  model: string,
-  format: OutputFormat | undefined
-): OutputFormat {
-  return format && format !== "default" && supportsRichOutput(model)
-    ? format
-    : "default";
-}
-
-const GIF_FRAME_LONG_EDGE = 512;
-const GIF_FRAME_ALIGN = 16;
-
-/**
- * GIF `size` is the per-frame pixel size (multiples of 16); aspect-ratio names
- * are rejected. The sheet of all frames must stay within 3840px per edge, so
- * the long edge is pinned to 512, which fits 16 frames in a 4x4 sheet.
- */
-export function gifFrameSize(size: string): string {
-  const fallback = `${GIF_FRAME_LONG_EDGE}x${GIF_FRAME_LONG_EDGE}`;
-  const match = size.trim().match(/^(\d+)\s*([:x])\s*(\d+)$/i);
-  if (!match) return fallback;
-  const w = Number(match[1]);
-  const h = Number(match[3]);
-  if (!w || !h) return fallback;
-  if (match[2].toLowerCase() === "x" && w % GIF_FRAME_ALIGN === 0 && h % GIF_FRAME_ALIGN === 0) {
-    return `${w}x${h}`;
-  }
-  const scale = GIF_FRAME_LONG_EDGE / Math.max(w, h);
-  const align = (value: number) =>
-    Math.max(GIF_FRAME_ALIGN, Math.round((value * scale) / GIF_FRAME_ALIGN) * GIF_FRAME_ALIGN);
-  return `${align(w)}x${align(h)}`;
-}
-
-/**
- * gpt-image-2.6 GIF/SVG fields, shared by the local payload and the managed
- * facade request. Both formats are text-to-image only, so callers drop image
- * inputs and masks themselves.
- */
-export function richOutputFields(
-  params: Pick<
-    GenerateParams,
-    "model" | "outputFormat" | "frameCount" | "frameDurationMs" | "svgModel"
-  >
-): Record<string, unknown> {
-  const format = effectiveOutputFormat(params.model, params.outputFormat);
-  if (format === "gif") {
-    return {
-      output_format: "gif",
-      ...(typeof params.frameCount === "number" ? { frame_count: params.frameCount } : {}),
-      ...(typeof params.frameDurationMs === "number"
-        ? { frame_duration_ms: params.frameDurationMs }
-        : {}),
-    };
-  }
-  if (format === "svg") {
-    return {
-      output_format: "svg",
-      svg: { model: params.svgModel?.trim() || "gpt-5.4-mini" },
-    };
-  }
-  return {};
 }
 
 type RawModelItem = {
@@ -815,26 +740,33 @@ export async function generateImageWithOpenAiCompatible(
     // require. The old payload echoed the same base64 into four fields
     // (image/image_url/image_urls/reference_images), quadrupling the request
     // body for the main image and doubling it for every reference.
-    const outputFormat = effectiveOutputFormat(params.model, params.outputFormat);
+    if (params.imageUrls && params.imageUrls.length > 0) {
+      payload.image_urls = params.imageUrls;
+      if (params.imageUrls.length === 1) {
+        payload.image = params.imageUrls[0];
+      }
+    }
 
-    // GIF and SVG reject image inputs, masks and (for GIF) aspect-ratio sizes.
-    if (outputFormat === "default") {
-      if (params.imageUrls && params.imageUrls.length > 0) {
-        payload.image_urls = params.imageUrls;
-        if (params.imageUrls.length === 1) {
-          payload.image = params.imageUrls[0];
-        }
-      }
+    if (params.maskUrl) {
+      payload[maskFieldName(params.model)] = params.maskUrl;
+    }
 
-      if (params.maskUrl) {
-        payload.mask = params.maskUrl;
-      }
-    } else {
-      Object.assign(payload, richOutputFields(params));
-      if (outputFormat === "gif") {
-        payload.size = gifFrameSize(params.size);
-        delete payload.resolution;
-      }
+    // gpt-image-2.5 / 2.6 have their own size, resolution and option rules
+    // (GIF frame sizes, ext tiers, quality, output format, ...). Image inputs
+    // are forwarded as-is; gateways that cannot combine them with GIF/SVG
+    // answer with their own error.
+    const resolved = resolveImageRequest(
+      params.model,
+      params.size,
+      params.resolution,
+      params.options
+    );
+    if (resolved) {
+      if (resolved.size) payload.size = resolved.size;
+      else delete payload.size;
+      if (resolved.resolution) payload.resolution = resolved.resolution;
+      else delete payload.resolution;
+      Object.assign(payload, resolved.fields);
     }
   }
 

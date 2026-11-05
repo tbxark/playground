@@ -1,10 +1,6 @@
 import { create } from "zustand";
 
-import type { OutputFormat } from "@/services/types";
-
-export const DEFAULT_FRAME_COUNT = 9;
-export const DEFAULT_FRAME_DURATION_MS = 200;
-export const DEFAULT_SVG_MODEL = "gpt-5.4-mini";
+import type { ImageOptions } from "../../shared/imageModels";
 
 type PromptState = {
   prompt: string;
@@ -16,10 +12,8 @@ type PromptState = {
   cfgScale: number | undefined;
   steps: number | undefined;
   activeTagIds: string[];
-  outputFormat: OutputFormat;
-  frameCount: number;
-  frameDurationMs: number;
-  svgModel: string;
+  /** gpt-image-2.5 / 2.6 tunables; sanitized per model at request time. */
+  imageOptions: ImageOptions;
 
   // Actions
   setPrompt: (prompt: string) => void;
@@ -30,10 +24,7 @@ type PromptState = {
   setSeed: (seed: number | undefined) => void;
   setCfgScale: (cfgScale: number | undefined) => void;
   setSteps: (steps: number | undefined) => void;
-  setOutputFormat: (outputFormat: OutputFormat) => void;
-  setFrameCount: (frameCount: number) => void;
-  setFrameDurationMs: (frameDurationMs: number) => void;
-  setSvgModel: (svgModel: string) => void;
+  setImageOptions: (patch: Partial<ImageOptions>) => void;
   toggleTag: (tag: { id: string; prompt: string }) => void;
   clearTags: () => void;
   resetAll: () => void;
@@ -49,10 +40,7 @@ export const usePromptStore = create<PromptState>((set, get) => ({
   cfgScale: undefined,
   steps: undefined,
   activeTagIds: [],
-  outputFormat: "default",
-  frameCount: DEFAULT_FRAME_COUNT,
-  frameDurationMs: DEFAULT_FRAME_DURATION_MS,
-  svgModel: DEFAULT_SVG_MODEL,
+  imageOptions: {},
 
   setPrompt: (prompt) => set({ prompt }),
   setNegativePrompt: (negativePrompt) => set({ negativePrompt }),
@@ -62,10 +50,8 @@ export const usePromptStore = create<PromptState>((set, get) => ({
   setSeed: (seed) => set({ seed }),
   setCfgScale: (cfgScale) => set({ cfgScale }),
   setSteps: (steps) => set({ steps }),
-  setOutputFormat: (outputFormat) => set({ outputFormat }),
-  setFrameCount: (frameCount) => set({ frameCount }),
-  setFrameDurationMs: (frameDurationMs) => set({ frameDurationMs }),
-  setSvgModel: (svgModel) => set({ svgModel }),
+  setImageOptions: (patch) =>
+    set((state) => ({ imageOptions: { ...state.imageOptions, ...patch } })),
 
   toggleTag: (tag) => {
     const { activeTagIds, prompt } = get();
@@ -101,10 +87,7 @@ export const usePromptStore = create<PromptState>((set, get) => ({
       cfgScale: undefined,
       steps: undefined,
       activeTagIds: [],
-      outputFormat: "default",
-      frameCount: DEFAULT_FRAME_COUNT,
-      frameDurationMs: DEFAULT_FRAME_DURATION_MS,
-      svgModel: DEFAULT_SVG_MODEL,
+      imageOptions: {},
     }),
 }));
 

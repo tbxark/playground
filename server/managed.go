@@ -47,67 +47,17 @@ func (c config) managedConfig() *managedConfigResponse {
 }
 
 type managedGenerateRequest struct {
-	Model          string   `json:"model"`
-	Prompt         string   `json:"prompt"`
-	NegativePrompt string   `json:"negativePrompt"`
-	ImageURLs      []string `json:"imageUrls"`
-	MaskURL        string   `json:"maskUrl"`
-	Size           string   `json:"size"`
-	Resolution     string   `json:"resolution"`
-	Seed           *float64 `json:"seed"`
-	CfgScale       *float64 `json:"cfgScale"`
-	Steps          *float64 `json:"steps"`
-	// OutputFormat is "gif" or "svg" (gpt-image-2.6 only); empty keeps raster output.
-	OutputFormat    string `json:"outputFormat"`
-	FrameCount      *int   `json:"frameCount"`
-	FrameDurationMs *int   `json:"frameDurationMs"`
-}
-
-const defaultSVGModel = "gpt-5.4-mini"
-
-// supportsRichOutput mirrors supportsRichOutput in src/services/imageService.ts.
-func supportsRichOutput(model string) bool {
-	id := strings.ToLower(model)
-	return strings.Contains(id, "gpt-image-2.6") &&
-		(strings.Contains(id, "flare") || strings.Contains(id, "sunburst"))
-}
-
-// richOutputFields validates the GIF/SVG request and returns the extra upstream
-// payload fields. It mirrors richOutputPayload in functions/managed.ts. The
-// SVG text model is fixed by the server so users cannot pick a billed model.
-func richOutputFields(body managedGenerateRequest, svgModel string) (map[string]any, string) {
-	if body.OutputFormat != "gif" && body.OutputFormat != "svg" {
-		return nil, "invalid_request"
-	}
-	if !supportsRichOutput(body.Model) {
-		return nil, "output_format_unsupported"
-	}
-	if len(body.ImageURLs) > 0 || body.MaskURL != "" {
-		return nil, "invalid_request"
-	}
-	if body.OutputFormat == "svg" {
-		if svgModel == "" {
-			svgModel = defaultSVGModel
-		}
-		return map[string]any{
-			"output_format": "svg",
-			"svg":           map[string]any{"model": svgModel},
-		}, ""
-	}
-	fields := map[string]any{"output_format": "gif"}
-	if body.FrameCount != nil {
-		if *body.FrameCount < 2 || *body.FrameCount > 16 {
-			return nil, "invalid_request"
-		}
-		fields["frame_count"] = *body.FrameCount
-	}
-	if body.FrameDurationMs != nil {
-		if *body.FrameDurationMs < 20 || *body.FrameDurationMs%10 != 0 {
-			return nil, "invalid_request"
-		}
-		fields["frame_duration_ms"] = *body.FrameDurationMs
-	}
-	return fields, ""
+	Model          string               `json:"model"`
+	Prompt         string               `json:"prompt"`
+	NegativePrompt string               `json:"negativePrompt"`
+	ImageURLs      []string             `json:"imageUrls"`
+	MaskURL        string               `json:"maskUrl"`
+	Size           string               `json:"size"`
+	Resolution     string               `json:"resolution"`
+	Seed           *float64             `json:"seed"`
+	CfgScale       *float64             `json:"cfgScale"`
+	Steps          *float64             `json:"steps"`
+	Options        *managedImageOptions `json:"options"`
 }
 
 type managedAssistantRequest struct {
@@ -122,10 +72,10 @@ type managedAssistantResponse struct {
 
 // Same prompts as shared/assistantPrompts.ts.
 const (
-	promptEnhanceSystem = "你是一个顶尖的 Midjourney/Stable Diffusion/DALL-E 提示词工程专家。请将用户的简短构想深度润色与丰富细节，扩写出主体特征、场景环境、镜头视角、艺术画风、材质光影和情绪氛围，输出用于直接生图的精炼英文提示词（可中英并茂），不要包含任何解释、前缀或 Markdown 代码块。"
+	promptEnhanceSystem   = "你是一个顶尖的 Midjourney/Stable Diffusion/DALL-E 提示词工程专家。请将用户的简短构想深度润色与丰富细节，扩写出主体特征、场景环境、镜头视角、艺术画风、材质光影和情绪氛围，输出用于直接生图的精炼英文提示词（可中英并茂），不要包含任何解释、前缀或 Markdown 代码块。"
 	promptTranslateSystem = "你是一个专业的 AI 生图提示词翻译专家。请将用户输入的生图描述精准翻译为英文高质量提示词，提炼视觉主体、场景细节、艺术画风与光影质感，输出纯文本，不要有任何多余的解释、问候或引号。"
-	promptVisionSystem = "你是一个专业的 AI 视觉反推专家。请细致观察用户提供的参考图，反推其生图提示词 (Prompt)，涵盖：画面主体、角色姿态、背景环境、构图视角、艺术媒介风格（如油画、3D渲染、二次元插画、写实摄影等）、色彩基调与光影质感。直接输出适合生图的提示词，严禁输出任何问候或解释说明。"
-	promptVisionUser   = "请精准反推这张参考图的生图提示词："
+	promptVisionSystem    = "你是一个专业的 AI 视觉反推专家。请细致观察用户提供的参考图，反推其生图提示词 (Prompt)，涵盖：画面主体、角色姿态、背景环境、构图视角、艺术媒介风格（如油画、3D渲染、二次元插画、写实摄影等）、色彩基调与光影质感。直接输出适合生图的提示词，严禁输出任何问候或解释说明。"
+	promptVisionUser      = "请精准反推这张参考图的生图提示词："
 )
 
 func registerManagedRoutes(mux *http.ServeMux, cfg config, client *http.Client) {
@@ -202,19 +152,16 @@ func handleManagedGenerate(w http.ResponseWriter, r *http.Request, cfg config, c
 		writeError(w, http.StatusBadRequest, errorImageInputUnsupported)
 		return
 	}
-	var richFields map[string]any
-	if body.OutputFormat != "" {
-		var errCode string
-		richFields, errCode = richOutputFields(body, cfg.managedSVGModel)
-		if errCode != "" {
-			writeError(w, http.StatusBadRequest, errCode)
-			return
-		}
+	optionFields, errCode := imageOptionFields(body.Model, body.Options, cfg.managedSVGModel)
+	if errCode != "" {
+		writeError(w, http.StatusBadRequest, errCode)
+		return
 	}
-	size := formatSizeForModel(body.Size, body.Model)
-	if body.OutputFormat == "gif" {
-		// GIF size is already the per-frame pixel size; ratio conversion would break it.
-		size = body.Size
+	// gpt-image-2.5 / 2.6: the client already resolved size/resolution (GIF frame
+	// sizes, exact pixels, ext tiers); ratio conversion would break them.
+	size := body.Size
+	if imageCapsFor(body.Model) == nil {
+		size = formatSizeForModel(body.Size, body.Model)
 	}
 	payload := map[string]any{
 		"model":  body.Model,
@@ -226,7 +173,7 @@ func handleManagedGenerate(w http.ResponseWriter, r *http.Request, cfg config, c
 		payload["response_format"] = "url"
 	}
 	if !official {
-		if body.Resolution != "" && body.OutputFormat != "gif" {
+		if body.Resolution != "" {
 			payload["resolution"] = body.Resolution
 		}
 		if strings.TrimSpace(body.NegativePrompt) != "" {
@@ -249,9 +196,9 @@ func handleManagedGenerate(w http.ResponseWriter, r *http.Request, cfg config, c
 			}
 		}
 		if body.MaskURL != "" {
-			payload["mask"] = body.MaskURL
+			payload[maskFieldName(body.Model)] = body.MaskURL
 		}
-		for key, value := range richFields {
+		for key, value := range optionFields {
 			payload[key] = value
 		}
 	}

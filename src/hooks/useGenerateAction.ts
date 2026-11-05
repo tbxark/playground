@@ -10,35 +10,9 @@ import {
 import { usePromptStore } from "../stores/usePromptStore";
 import { useQueueStore } from "../stores/useQueueStore";
 import { getRuntimeImageState } from "../services/runtimeConfig";
-import { effectiveOutputFormat } from "../services/imageService";
 import { GenerateParams } from "../services/types";
 
 export type GenerateMode = "canvas" | "simple";
-
-/**
- * GIF/SVG fields for the current prompt-store state. Both formats are
- * text-to-image, so callers must reject image inputs before using them.
- */
-function richOutputParams(
-  model: string,
-  promptState: ReturnType<typeof usePromptStore.getState>
-): Pick<
-  GenerateParams,
-  "outputFormat" | "frameCount" | "frameDurationMs" | "svgModel"
-> {
-  const outputFormat = effectiveOutputFormat(model, promptState.outputFormat);
-  if (outputFormat === "gif") {
-    return {
-      outputFormat,
-      frameCount: promptState.frameCount,
-      frameDurationMs: promptState.frameDurationMs,
-    };
-  }
-  if (outputFormat === "svg") {
-    return { outputFormat, svgModel: promptState.svgModel };
-  }
-  return {};
-}
 
 /**
  * Single assembly point for generation parameters. The canvas command bar, the
@@ -99,16 +73,6 @@ export function useGenerateAction(mode: GenerateMode = "canvas") {
         return [];
       }
 
-      const rich = richOutputParams(model, promptState);
-      if (rich.outputFormat && imageUrls.length > 0) {
-        toast.warning(t("freeCanvas.toastRichOutputNoImages"));
-        return [];
-      }
-      if (rich.outputFormat && !prompt) {
-        toast.warning(t("simple.needInput"));
-        return [];
-      }
-
       const params: GenerateParams = {
         providerId: "openai",
         model,
@@ -120,7 +84,7 @@ export function useGenerateAction(mode: GenerateMode = "canvas") {
         seed: promptState.seed,
         cfgScale: promptState.cfgScale,
         steps: promptState.steps,
-        ...rich,
+        options: promptState.imageOptions,
       };
 
       const taskIds = useQueueStore
@@ -152,20 +116,6 @@ export function useGenerateAction(mode: GenerateMode = "canvas") {
       );
       navigate(runtime.mode === "managed" ? "/settings#server" : "/settings#image");
       return [];
-    }
-
-    const rich = richOutputParams(model, promptState);
-    if (rich.outputFormat) {
-      // Every canvas image is an implicit generation input; sending them would
-      // fail upstream, and silently dropping them would hide why.
-      if (main || references.length > 0) {
-        toast.warning(t("freeCanvas.toastRichOutputNoImages"));
-        return [];
-      }
-      if (!prompt) {
-        toast.warning(t("freeCanvas.toastNeedPromptOrReference"));
-        return [];
-      }
     }
 
     let imageUrls: string[] | undefined;
@@ -213,7 +163,7 @@ export function useGenerateAction(mode: GenerateMode = "canvas") {
       seed: promptState.seed,
       cfgScale: promptState.cfgScale,
       steps: promptState.steps,
-      ...rich,
+      options: promptState.imageOptions,
     };
 
     const taskIds = useQueueStore

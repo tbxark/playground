@@ -1,4 +1,5 @@
-import { OutputFormatControls } from "./OutputFormatControls";
+import { PromptImageOptions } from "@/components/ImageOptions/ImageOptionsPanel";
+import { availableResolutions, selectedResolution } from "../../../shared/imageModels";
 import React, {
   useCallback,
   useEffect,
@@ -719,10 +720,9 @@ export function FreeCanvasCommandBar() {
             </div>
           )}
 
-          <OutputFormatControls
+          <PromptImageOptions
             model={selectedModel}
             managed={runtimeMode === "managed"}
-            hasImageInputs={Boolean(main) || references.length > 0}
             className="border-t border-white/5 pt-2"
           />
 
@@ -765,13 +765,13 @@ export function FreeCanvasCommandBar() {
               </div>
 
               <div className="flex shrink-0 items-center gap-0.5 rounded-xl border border-white/10 bg-white/5 p-0.5">
-                {RESOLUTIONS.map((item) => (
+                {availableResolutions(selectedModel, RESOLUTIONS).map((item) => (
                   <button
                     key={item}
                     type="button"
                     className={cn(
                       "shrink-0 cursor-pointer whitespace-nowrap rounded-lg px-1.5 py-0.5 text-[11px] font-medium uppercase transition-colors",
-                      resolution === item
+                      selectedResolution(selectedModel, resolution) === item
                         ? "bg-white/20 font-bold text-white"
                         : "text-zinc-400 hover:text-white"
                     )}
