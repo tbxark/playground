@@ -439,3 +439,115 @@ func TestManagedUpstreamUnreachable(t *testing.T) {
 		t.Errorf("error = %q", got)
 	}
 }
+
+func postManagedGenerate(t *testing.T, cfg config, server *httptest.Server, body map[string]any) *http.Response {
+	t.Helper()
+	request := managedRequest(t, cfg, http.MethodPost, server.URL+managedGeneratePath, body)
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	return response
+}
+
+func TestManagedGenerateGIFPassesFrameSizeAndDropsResolution(t *testing.T) {
+	recorder := &captureRecorder{}
+	upstreamServer := httptest.NewServer(recorder.handler(http.StatusOK, `{"data":[{"task_id":"task_1"}]}`))
+	defer upstreamServer.Close()
+	cfg := managedTestConfig(t, upstreamServer.URL)
+	cfg.managedImageModels = []string{"gpt-image-2.6-flare"}
+	server := newTestServer(t, cfg)
+
+	response := postManagedGenerate(t, cfg, server, map[string]any{
+		"model":           "gpt-image-2.6-flare",
+		"prompt":          "a lantern",
+		"size":            "512x288",
+		"resolution":      "2k",
+		"outputFormat":    "gif",
+		"frameCount":      9,
+		"frameDurationMs": 200,
+	})
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(recorder.requests()[0].body), &payload); err != nil {
+		t.Fatalf("decode upstream payload: %v", err)
+	}
+	if payload["output_format"] != "gif" || payload["size"] != "512x288" {
+		t.Errorf("gif payload = %v", payload)
+	}
+	if payload["frame_count"] != float64(9) || payload["frame_duration_ms"] != float64(200) {
+		t.Errorf("frame fields = %v", payload)
+	}
+	if _, ok := payload["resolution"]; ok {
+		t.Errorf("resolution must not be sent for GIF: %v", payload)
+	}
+}
+
+func TestManagedGenerateSVGUsesServerModel(t *testing.T) {
+	recorder := &captureRecorder{}
+	upstreamServer := httptest.NewServer(recorder.handler(http.StatusOK, `{"data":[{"task_id":"task_1"}]}`))
+	defer upstreamServer.Close()
+	cfg := managedTestConfig(t, upstreamServer.URL)
+	cfg.managedImageModels = []string{"gpt-image-2.6-sunburst"}
+	cfg.managedSVGModel = "gpt-5.6-sol"
+	server := newTestServer(t, cfg)
+
+	response := postManagedGenerate(t, cfg, server, map[string]any{
+		"model":        "gpt-image-2.6-sunburst",
+		"prompt":       "a bakery logo",
+		"size":         "1:1",
+		"outputFormat": "svg",
+		// A client-chosen text model must be ignored.
+		"svgModel": "expensive-model",
+	})
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(recorder.requests()[0].body), &payload); err != nil {
+		t.Fatalf("decode upstream payload: %v", err)
+	}
+	svg, _ := payload["svg"].(map[string]any)
+	if payload["output_format"] != "svg" || svg["model"] != "gpt-5.6-sol" {
+		t.Errorf("svg payload = %v", payload)
+	}
+}
+
+func TestManagedGenerateRichOutputValidation(t *testing.T) {
+	recorder := &captureRecorder{}
+	upstreamServer := httptest.NewServer(recorder.handler(http.StatusOK, `{}`))
+	defer upstreamServer.Close()
+	cfg := managedTestConfig(t, upstreamServer.URL)
+	cfg.managedImageModels = []string{"gpt-image-2.6-flare", "flux-1-dev"}
+	server := newTestServer(t, cfg)
+
+	cases := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"unsupported model", map[string]any{"model": "flux-1-dev", "prompt": "x", "size": "1:1", "outputFormat": "gif"}, "output_format_unsupported"},
+		{"image inputs", map[string]any{"model": "gpt-image-2.6-flare", "prompt": "x", "size": "1:1", "outputFormat": "svg", "imageUrls": []string{"data:image/png;base64,AAAA"}}, "invalid_request"},
+		{"too many frames", map[string]any{"model": "gpt-image-2.6-flare", "prompt": "x", "size": "512x512", "outputFormat": "gif", "frameCount": 17}, "invalid_request"},
+		{"bad duration", map[string]any{"model": "gpt-image-2.6-flare", "prompt": "x", "size": "512x512", "outputFormat": "gif", "frameDurationMs": 25}, "invalid_request"},
+		{"unknown format", map[string]any{"model": "gpt-image-2.6-flare", "prompt": "x", "size": "1:1", "outputFormat": "mp4"}, "invalid_request"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			response := postManagedGenerate(t, cfg, server, tc.body)
+			if response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", response.StatusCode)
+			}
+			if got := decodeBody[errorBody](t, response).Error; got != tc.want {
+				t.Errorf("error = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if calls := len(recorder.requests()); calls != 0 {
+		t.Errorf("invalid requests must not reach upstream, got %d calls", calls)
+	}
+}

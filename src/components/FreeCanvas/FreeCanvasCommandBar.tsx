@@ -1,3 +1,4 @@
+import { OutputFormatControls } from "./OutputFormatControls";
 import React, {
   useCallback,
   useEffect,
@@ -717,6 +718,13 @@ export function FreeCanvasCommandBar() {
               )}
             </div>
           )}
+
+          <OutputFormatControls
+            model={selectedModel}
+            managed={runtimeMode === "managed"}
+            hasImageInputs={Boolean(main) || references.length > 0}
+            className="border-t border-white/5 pt-2"
+          />
 
           <div className="flex flex-col gap-2 border-t border-white/5 pt-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="no-scrollbar flex w-full min-w-0 items-center gap-1.5 overflow-x-auto py-0.5 sm:flex-1">

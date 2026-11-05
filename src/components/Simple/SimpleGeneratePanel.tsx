@@ -30,6 +30,7 @@ import { usePromptStore } from "../../stores/usePromptStore";
 import { useLightboxStore } from "../../stores/useLightboxStore";
 import { useGenerateAction } from "../../hooks/useGenerateAction";
 import { useRuntimeImageState } from "../../hooks/useRuntimeImageState";
+import { OutputFormatControls } from "@/components/FreeCanvas/OutputFormatControls";
 import { useSimpleEdit } from "../../hooks/useSimpleEdit";
 import { isImeComposing, isOverlayOpen } from "@/utils/keyboard";
 import { cn } from "@/utils/cn";
@@ -541,6 +542,12 @@ export function SimpleGeneratePanel() {
                 />
               </button>
             </div>
+
+            <OutputFormatControls
+              model={selectedModel}
+              managed={mode === "managed"}
+              hasImageInputs={simpleImages.length > 0}
+            />
 
             {showAdvanced && (
               <div className="grid grid-cols-1 gap-3 border-t border-white/10 pt-2.5 text-xs sm:grid-cols-2">

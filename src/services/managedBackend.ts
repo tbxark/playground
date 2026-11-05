@@ -10,8 +10,10 @@ import {
   type ServerGenerateRequest,
 } from "../../shared/contracts";
 import {
+  effectiveOutputFormat,
   extractImageUrl,
   extractTaskId,
+  gifFrameSize,
   pollAsyncTaskWith,
 } from "./imageService";
 import type { GenerateParams } from "./types";
@@ -46,16 +48,27 @@ async function managedError(response: Response): Promise<never> {
 }
 
 function buildGenerateRequest(params: GenerateParams): ServerGenerateRequest {
+  const outputFormat = effectiveOutputFormat(params.model, params.outputFormat);
+  const rich = outputFormat === "gif" || outputFormat === "svg";
   return {
     model: params.model,
     prompt: params.prompt,
     ...(params.negativePrompt?.trim()
       ? { negativePrompt: params.negativePrompt.trim() }
       : {}),
-    ...(params.imageUrls?.length ? { imageUrls: params.imageUrls } : {}),
-    ...(params.maskUrl ? { maskUrl: params.maskUrl } : {}),
-    size: params.size,
-    ...(params.resolution ? { resolution: params.resolution } : {}),
+    ...(!rich && params.imageUrls?.length ? { imageUrls: params.imageUrls } : {}),
+    ...(!rich && params.maskUrl ? { maskUrl: params.maskUrl } : {}),
+    size: outputFormat === "gif" ? gifFrameSize(params.size) : params.size,
+    ...(outputFormat !== "gif" && params.resolution
+      ? { resolution: params.resolution }
+      : {}),
+    ...(rich ? { outputFormat } : {}),
+    ...(outputFormat === "gif" && typeof params.frameCount === "number"
+      ? { frameCount: params.frameCount }
+      : {}),
+    ...(outputFormat === "gif" && typeof params.frameDurationMs === "number"
+      ? { frameDurationMs: params.frameDurationMs }
+      : {}),
     ...(typeof params.seed === "number" ? { seed: params.seed } : {}),
     ...(typeof params.cfgScale === "number" ? { cfgScale: params.cfgScale } : {}),
     ...(typeof params.steps === "number" ? { steps: params.steps } : {}),

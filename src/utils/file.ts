@@ -87,6 +87,23 @@ export async function fetchAsBlob(
   }
 }
 
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  "image/gif": "gif",
+  "image/svg+xml": "svg",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+};
+
+/**
+ * Callers name every download `.png`; gpt-image-2.6 can return GIF/SVG, which
+ * would otherwise be saved under a lying extension. Only the default `.png`
+ * is rewritten, from the blob's real type.
+ */
+export function withImageExtension(filename: string, mime: string): string {
+  const ext = IMAGE_EXTENSIONS[mime.toLowerCase().split(";")[0].trim()];
+  return ext ? filename.replace(/\.png$/i, `.${ext}`) : filename;
+}
+
 /**
  * Trigger a browser download.
  *
@@ -115,7 +132,7 @@ export function downloadFile(urlOrBlob: string | Blob, filename: string): boolea
 
   const a = document.createElement("a");
   a.href = href;
-  a.download = filename;
+  a.download = isBlob ? withImageExtension(filename, urlOrBlob.type) : filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

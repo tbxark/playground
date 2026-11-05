@@ -1,5 +1,11 @@
 import { create } from "zustand";
 
+import type { OutputFormat } from "@/services/types";
+
+export const DEFAULT_FRAME_COUNT = 9;
+export const DEFAULT_FRAME_DURATION_MS = 200;
+export const DEFAULT_SVG_MODEL = "gpt-5.4-mini";
+
 type PromptState = {
   prompt: string;
   negativePrompt: string;
@@ -10,6 +16,10 @@ type PromptState = {
   cfgScale: number | undefined;
   steps: number | undefined;
   activeTagIds: string[];
+  outputFormat: OutputFormat;
+  frameCount: number;
+  frameDurationMs: number;
+  svgModel: string;
 
   // Actions
   setPrompt: (prompt: string) => void;
@@ -20,6 +30,10 @@ type PromptState = {
   setSeed: (seed: number | undefined) => void;
   setCfgScale: (cfgScale: number | undefined) => void;
   setSteps: (steps: number | undefined) => void;
+  setOutputFormat: (outputFormat: OutputFormat) => void;
+  setFrameCount: (frameCount: number) => void;
+  setFrameDurationMs: (frameDurationMs: number) => void;
+  setSvgModel: (svgModel: string) => void;
   toggleTag: (tag: { id: string; prompt: string }) => void;
   clearTags: () => void;
   resetAll: () => void;
@@ -35,6 +49,10 @@ export const usePromptStore = create<PromptState>((set, get) => ({
   cfgScale: undefined,
   steps: undefined,
   activeTagIds: [],
+  outputFormat: "default",
+  frameCount: DEFAULT_FRAME_COUNT,
+  frameDurationMs: DEFAULT_FRAME_DURATION_MS,
+  svgModel: DEFAULT_SVG_MODEL,
 
   setPrompt: (prompt) => set({ prompt }),
   setNegativePrompt: (negativePrompt) => set({ negativePrompt }),
@@ -44,6 +62,10 @@ export const usePromptStore = create<PromptState>((set, get) => ({
   setSeed: (seed) => set({ seed }),
   setCfgScale: (cfgScale) => set({ cfgScale }),
   setSteps: (steps) => set({ steps }),
+  setOutputFormat: (outputFormat) => set({ outputFormat }),
+  setFrameCount: (frameCount) => set({ frameCount }),
+  setFrameDurationMs: (frameDurationMs) => set({ frameDurationMs }),
+  setSvgModel: (svgModel) => set({ svgModel }),
 
   toggleTag: (tag) => {
     const { activeTagIds, prompt } = get();
@@ -79,6 +101,10 @@ export const usePromptStore = create<PromptState>((set, get) => ({
       cfgScale: undefined,
       steps: undefined,
       activeTagIds: [],
+      outputFormat: "default",
+      frameCount: DEFAULT_FRAME_COUNT,
+      frameDurationMs: DEFAULT_FRAME_DURATION_MS,
+      svgModel: DEFAULT_SVG_MODEL,
     }),
 }));
 

@@ -123,6 +123,7 @@ Environment variables (see `.env.example`; locally put them in `.env.local`, whi
 | `LLM_BASE_URL` / `LLM_API_KEY` | OpenAI-compatible upstream for the assistant; base URL must include its version segment (e.g. `https://gateway.example.com/v1`) |
 | `IMAGE_BASE_URL` / `IMAGE_API_KEY` | Upstream for image generation; falls back to `LLM_*` when unset |
 | `MANAGED_IMAGE_MODELS` | Comma-separated image model ids managed users are restricted to; `/api/config` returns them and the first acts as the default. Missing means the managed API answers 503. |
+| `MANAGED_SVG_MODEL` | Text model that writes SVG output (`gpt-image-2.6-*` only) for managed users; defaults to `gpt-5.4-mini`. Billed on top of the image. |
 | `MANAGED_LLM_MODEL` / `MANAGED_VISION_MODEL` | Fixed assistant text/vision model ids for managed users. Leave unset to disable the assistant for managed sessions. |
 | `HOST` / `PORT` | Go server only: listen address (default `127.0.0.1:8080`; the Docker image sets `0.0.0.0:8080`) |
 | `ENV_FILE` | Go server only: optional dotenv file to load at startup (already-exported variables win) |

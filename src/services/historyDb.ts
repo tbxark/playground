@@ -3,6 +3,7 @@ import JSZip from "jszip";
 import { toast } from "sonner";
 import { HistoryRecord } from "./types";
 import { i18n } from "@/i18n";
+import { withImageExtension } from "@/utils/file";
 
 export type CanvasAssetRecord = {
   key: string;
@@ -283,7 +284,10 @@ export async function exportHistoryAsZip(): Promise<Blob> {
   for await (const cursor of readTx.store) {
     const record = cursor.value;
     index += 1;
-    const filename = `image_${index}_${record.nanoid}.png`;
+    const filename = withImageExtension(
+      `image_${index}_${record.nanoid}.png`,
+      record.imageBlob.type
+    );
     zip.file(filename, record.imageBlob);
 
     manifest.push({

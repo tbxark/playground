@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -57,6 +58,52 @@ type managedGenerateRequest struct {
 	Seed           *float64 `json:"seed"`
 	CfgScale       *float64 `json:"cfgScale"`
 	Steps          *float64 `json:"steps"`
+	// OutputFormat is "gif" or "svg" (gpt-image-2.6 only); empty keeps raster output.
+	OutputFormat    string `json:"outputFormat"`
+	FrameCount      *int   `json:"frameCount"`
+	FrameDurationMs *int   `json:"frameDurationMs"`
+}
+
+const defaultSVGModel = "gpt-5.4-mini"
+
+var richOutputModelPattern = regexp.MustCompile(`(?i)^gpt-image-2\.6(?:$|[-_.])`)
+
+// richOutputFields validates the GIF/SVG request and returns the extra upstream
+// payload fields. It mirrors richOutputPayload in functions/managed.ts. The
+// SVG text model is fixed by the server so users cannot pick a billed model.
+func richOutputFields(body managedGenerateRequest, svgModel string) (map[string]any, string) {
+	if body.OutputFormat != "gif" && body.OutputFormat != "svg" {
+		return nil, "invalid_request"
+	}
+	if !richOutputModelPattern.MatchString(strings.TrimSpace(body.Model)) {
+		return nil, "output_format_unsupported"
+	}
+	if len(body.ImageURLs) > 0 || body.MaskURL != "" {
+		return nil, "invalid_request"
+	}
+	if body.OutputFormat == "svg" {
+		if svgModel == "" {
+			svgModel = defaultSVGModel
+		}
+		return map[string]any{
+			"output_format": "svg",
+			"svg":           map[string]any{"model": svgModel},
+		}, ""
+	}
+	fields := map[string]any{"output_format": "gif"}
+	if body.FrameCount != nil {
+		if *body.FrameCount < 2 || *body.FrameCount > 16 {
+			return nil, "invalid_request"
+		}
+		fields["frame_count"] = *body.FrameCount
+	}
+	if body.FrameDurationMs != nil {
+		if *body.FrameDurationMs < 20 || *body.FrameDurationMs%10 != 0 {
+			return nil, "invalid_request"
+		}
+		fields["frame_duration_ms"] = *body.FrameDurationMs
+	}
+	return fields, ""
 }
 
 type managedAssistantRequest struct {
@@ -151,17 +198,31 @@ func handleManagedGenerate(w http.ResponseWriter, r *http.Request, cfg config, c
 		writeError(w, http.StatusBadRequest, errorImageInputUnsupported)
 		return
 	}
+	var richFields map[string]any
+	if body.OutputFormat != "" {
+		var errCode string
+		richFields, errCode = richOutputFields(body, cfg.managedSVGModel)
+		if errCode != "" {
+			writeError(w, http.StatusBadRequest, errCode)
+			return
+		}
+	}
+	size := formatSizeForModel(body.Size, body.Model)
+	if body.OutputFormat == "gif" {
+		// GIF size is already the per-frame pixel size; ratio conversion would break it.
+		size = body.Size
+	}
 	payload := map[string]any{
 		"model":  body.Model,
 		"prompt": body.Prompt,
 		"n":      1,
-		"size":   formatSizeForModel(body.Size, body.Model),
+		"size":   size,
 	}
 	if strings.HasPrefix(strings.ToLower(body.Model), "dall-e") {
 		payload["response_format"] = "url"
 	}
 	if !official {
-		if body.Resolution != "" {
+		if body.Resolution != "" && body.OutputFormat != "gif" {
 			payload["resolution"] = body.Resolution
 		}
 		if strings.TrimSpace(body.NegativePrompt) != "" {
@@ -185,6 +246,9 @@ func handleManagedGenerate(w http.ResponseWriter, r *http.Request, cfg config, c
 		}
 		if body.MaskURL != "" {
 			payload["mask"] = body.MaskURL
+		}
+		for key, value := range richFields {
+			payload[key] = value
 		}
 	}
 	forwardManagedJSON(w, r, client, target, http.MethodPost, "images/generations", payload)

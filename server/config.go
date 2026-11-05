@@ -51,6 +51,7 @@ type config struct {
 	// Fixed assistant models for managed users.
 	managedLlmModel    string
 	managedVisionModel string
+	managedSVGModel    string
 }
 
 func (c config) authConfigured() bool {
@@ -78,6 +79,7 @@ func loadConfig() (config, error) {
 		managedImageModels: parseManagedImageModels(os.Getenv("MANAGED_IMAGE_MODELS")),
 		managedLlmModel:    strings.TrimSpace(os.Getenv("MANAGED_LLM_MODEL")),
 		managedVisionModel: strings.TrimSpace(os.Getenv("MANAGED_VISION_MODEL")),
+		managedSVGModel:    strings.TrimSpace(os.Getenv("MANAGED_SVG_MODEL")),
 	}
 
 	port, err := strconv.Atoi(cfg.port)

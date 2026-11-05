@@ -125,6 +125,53 @@ function formatSizeForModel(size: string, model: string): string {
   return size;
 }
 
+const DEFAULT_SVG_MODEL = "gpt-5.4-mini";
+
+/** GIF/SVG exist only on the gpt-image-2.6 family; mirrors supportsRichOutput(). */
+function supportsRichOutput(model: string): boolean {
+  return /^gpt-image-2\.6(?:$|[-_.])/i.test(model.trim());
+}
+
+/** Validates the GIF/SVG fields; returns an error code or the payload fields. */
+function richOutputPayload(
+  body: ServerGenerateRequest,
+  env: ServerEnv
+): { error: string } | { fields: Record<string, unknown> } {
+  if (body.outputFormat !== "gif" && body.outputFormat !== "svg") {
+    return { error: "invalid_request" };
+  }
+  if (!supportsRichOutput(body.model)) return { error: "output_format_unsupported" };
+  if ((body.imageUrls?.length ?? 0) > 0 || body.maskUrl) {
+    return { error: "invalid_request" };
+  }
+  if (body.outputFormat === "svg") {
+    return {
+      fields: {
+        output_format: "svg",
+        svg: { model: parseOptionalModel(env.MANAGED_SVG_MODEL) ?? DEFAULT_SVG_MODEL },
+      },
+    };
+  }
+  const fields: Record<string, unknown> = { output_format: "gif" };
+  if (body.frameCount !== undefined) {
+    if (!Number.isInteger(body.frameCount) || body.frameCount < 2 || body.frameCount > 16) {
+      return { error: "invalid_request" };
+    }
+    fields.frame_count = body.frameCount;
+  }
+  if (body.frameDurationMs !== undefined) {
+    if (
+      !Number.isInteger(body.frameDurationMs) ||
+      body.frameDurationMs < 20 ||
+      body.frameDurationMs % 10 !== 0
+    ) {
+      return { error: "invalid_request" };
+    }
+    fields.frame_duration_ms = body.frameDurationMs;
+  }
+  return { fields };
+}
+
 function assistantMessages(body: ServerAssistantRequest) {
   if (body.kind === "vision") {
     return [
@@ -216,15 +263,26 @@ export function registerManagedRoutes(app: Hono, env: ServerEnv): void {
         400
       );
     }
+    const rich = body.outputFormat !== undefined;
+    const richFields = rich ? richOutputPayload(body, env) : null;
+    if (richFields && "error" in richFields) {
+      return c.json<ServerErrorBody>({ error: richFields.error }, 400);
+    }
     const payload: Record<string, unknown> = {
       model: body.model,
       prompt: body.prompt,
       n: 1,
-      size: formatSizeForModel(body.size, body.model),
+      // GIF size is already the per-frame pixel size; ratio conversion would break it.
+      size:
+        body.outputFormat === "gif"
+          ? body.size
+          : formatSizeForModel(body.size, body.model),
     };
     if (isDalle) payload.response_format = "url";
     if (!official) {
-      if (body.resolution) payload.resolution = body.resolution;
+      if (body.resolution && body.outputFormat !== "gif") {
+        payload.resolution = body.resolution;
+      }
       if (body.negativePrompt?.trim()) {
         payload.negative_prompt = body.negativePrompt.trim();
       }
@@ -239,6 +297,9 @@ export function registerManagedRoutes(app: Hono, env: ServerEnv): void {
         if (body.imageUrls.length === 1) payload.image = body.imageUrls[0];
       }
       if (body.maskUrl) payload.mask = body.maskUrl;
+      if (richFields && "fields" in richFields) {
+        Object.assign(payload, richFields.fields);
+      }
     }
 
     return forwardJson(c, `${upstream.baseUrl}/images/generations`, {

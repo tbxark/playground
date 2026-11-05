@@ -32,7 +32,7 @@
     "lucide-react": "^1.18.0",
     "nanoid": "^5.1.11",
     "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
-    "openai": "^7.45.0",
+    "openai": "^7.50.0",
     "pica": "^10.0.3",
     "radix-ui": "^1.6.0",
     "react": "^19.2.6",

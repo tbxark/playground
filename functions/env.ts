@@ -25,6 +25,8 @@ export type ServerEnv = {
   MANAGED_LLM_MODEL?: string;
   /** Fixed assistant vision model for managed users. */
   MANAGED_VISION_MODEL?: string;
+  /** Text model that writes SVG output for gpt-image-2.6; defaults to gpt-5.4-mini. */
+  MANAGED_SVG_MODEL?: string;
 };
 
 /** Resolve the effective upstream for one proxy kind, with IMAGE falling back to LLM. */

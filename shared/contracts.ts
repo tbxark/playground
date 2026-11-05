@@ -62,6 +62,14 @@ export type ServerGenerateRequest = {
   seed?: number;
   cfgScale?: number;
   steps?: number;
+  /**
+   * gpt-image-2.6 only. GIF and SVG are text-to-image: imageUrls/maskUrl must
+   * be absent. `size` is then the per-frame pixel size for GIF. The SVG text
+   * model is chosen by the server (`MANAGED_SVG_MODEL`), never by the client.
+   */
+  outputFormat?: "gif" | "svg";
+  frameCount?: number;
+  frameDurationMs?: number;
 };
 
 export type ServerAssistantRequest =

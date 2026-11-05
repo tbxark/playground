@@ -1353,7 +1353,13 @@ export function ImageWorkspace({
       image.fileName ||
       `playground_${image.title?.trim() ? image.title.trim().replace(/\s+/g, "_") : Date.now()}.png`;
     if (image.url.startsWith("blob:") || image.url.startsWith("data:")) {
-      if (!downloadFile(image.url, fileName)) {
+      // Read the local bytes so the extension can follow the real type (GIF/SVG).
+      try {
+        const local = await (await fetch(image.url)).blob();
+        if (!downloadFile(local, fileName)) {
+          toast.error(t("err.downloadBlocked"));
+        }
+      } catch {
         toast.error(t("err.downloadBlocked"));
       }
       return;
