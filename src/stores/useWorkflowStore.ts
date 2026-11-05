@@ -8,6 +8,13 @@ import { useConfigStore } from "./useConfigStore";
 import { dispatchGenerate } from "../services/providers/dispatcher";
 import { generateManagedImage } from "../services/managedBackend";
 import { getRuntimeImageState } from "../services/runtimeConfig";
+import { effectiveOutputFormat } from "../services/imageService";
+import type { OutputFormat } from "../services/types";
+import {
+  DEFAULT_FRAME_COUNT,
+  DEFAULT_FRAME_DURATION_MS,
+  DEFAULT_SVG_MODEL,
+} from "./usePromptStore";
 import { requestImageToPrompt, requestPolish } from "../services/assistantRuntime";
 import { saveToHistory } from "../services/historyDb";
 import {
@@ -39,6 +46,11 @@ export type WorkflowNodeData = {
   model?: string;
   size?: string;
   resolution?: string;
+  /** gpt-image-2.6 flare/sunburst only; absent = default raster output. */
+  outputFormat?: OutputFormat;
+  frameCount?: number;
+  frameDurationMs?: number;
+  svgModel?: string;
   cfgScale?: number;
   steps?: number;
   seed?: number;
@@ -1156,6 +1168,24 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
           return;
         }
 
+        if (
+          effectiveOutputFormat(model, genNode.data.outputFormat) !== "default" &&
+          imageUrls.length > 0
+        ) {
+          // GIF/SVG are text-to-image: sending the references would fail
+          // upstream, dropping them would hide why.
+          const statusText = i18n.t("workflowStore.statusRichOutputNoImages");
+          toast.warning(
+            i18n.t("workflowStore.toastRichOutputNoImages", { title: genNode.title })
+          );
+          get().updateNodeData(nodeId, {
+            status: "error",
+            statusText,
+            error: statusText,
+          });
+          return;
+        }
+
         // Set status to running
         inFlightExecution.add(nodeId);
         const controller = new AbortController();
@@ -1175,6 +1205,10 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
               progress: p.progress ?? 50,
             });
           };
+          const outputFormat = effectiveOutputFormat(
+            model,
+            genNode.data.outputFormat
+          );
           const params = {
             providerId,
             model,
@@ -1183,6 +1217,19 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
             imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
             size: genNode.data.size || "1:1",
             resolution: genNode.data.resolution || "1k",
+            ...(outputFormat === "gif"
+              ? {
+                  outputFormat,
+                  frameCount: genNode.data.frameCount ?? DEFAULT_FRAME_COUNT,
+                  frameDurationMs:
+                    genNode.data.frameDurationMs ?? DEFAULT_FRAME_DURATION_MS,
+                }
+              : outputFormat === "svg"
+                ? {
+                    outputFormat,
+                    svgModel: genNode.data.svgModel || DEFAULT_SVG_MODEL,
+                  }
+                : {}),
             cfgScale: genNode.data.cfgScale,
             steps: genNode.data.steps,
             seed: genNode.data.seed,

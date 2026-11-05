@@ -127,9 +127,13 @@ function formatSizeForModel(size: string, model: string): string {
 
 const DEFAULT_SVG_MODEL = "gpt-5.4-mini";
 
-/** GIF/SVG exist only on the gpt-image-2.6 family; mirrors supportsRichOutput(). */
+/** GIF/SVG exist only on gpt-image-2.6 flare/sunburst; mirrors supportsRichOutput(). */
 function supportsRichOutput(model: string): boolean {
-  return /^gpt-image-2\.6(?:$|[-_.])/i.test(model.trim());
+  const id = model.toLowerCase();
+  return (
+    id.includes("gpt-image-2.6") &&
+    (id.includes("flare") || id.includes("sunburst"))
+  );
 }
 
 /** Validates the GIF/SVG fields; returns an error code or the payload fields. */

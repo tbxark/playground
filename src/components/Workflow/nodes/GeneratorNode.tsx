@@ -10,7 +10,13 @@ import {
 import { WorkflowNode, useWorkflowStore } from "../../../stores/useWorkflowStore";
 import { WorkflowNodeWrapper, WorkflowPortDef } from "./WorkflowNodeWrapper";
 import { useTranslation } from "react-i18next";
-import { modelDisplayName } from "../../../services/imageService";
+import { effectiveOutputFormat, modelDisplayName } from "../../../services/imageService";
+import { OutputFormatFields } from "../../FreeCanvas/OutputFormatControls";
+import {
+  DEFAULT_FRAME_COUNT,
+  DEFAULT_FRAME_DURATION_MS,
+  DEFAULT_SVG_MODEL,
+} from "../../../stores/usePromptStore";
 import { Button } from "../../ui/button";
 import { Progress } from "../../ui/progress";
 import { useFreeCanvasStore } from "../../../stores/useFreeCanvasStore";
@@ -37,11 +43,17 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
   const addExternalImage = useFreeCanvasStore((state) => state.addExternalImage);
   const openLightbox = useLightboxStore((state) => state.open);
 
-  const { models: activeModels, selectedModel, isModelAllowed } = useRuntimeImageState();
+  const {
+    mode: runtimeMode,
+    models: activeModels,
+    selectedModel,
+    isModelAllowed,
+  } = useRuntimeImageState();
 
   const model = node.data.model || selectedModel || "";
   const size = node.data.size || "1:1";
   const resolution = node.data.resolution || "1k";
+  const outputFormat = effectiveOutputFormat(model, node.data.outputFormat);
 
   const isRunning = node.data.status === "running";
   const isDone = node.data.status === "done";
@@ -208,7 +220,7 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
             ))}
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className={cn("flex items-center gap-1", outputFormat === "gif" && "hidden")}>
             {["1k", "2k"].map((res) => (
               <button
                 key={res}
@@ -226,6 +238,20 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
             ))}
           </div>
         </div>
+
+        {/* gpt-image-2.6 GIF / SVG output */}
+        <OutputFormatFields
+          model={model}
+          managed={runtimeMode === "managed"}
+          hasImageInputs={imageEdges.length > 0}
+          value={{
+            outputFormat: node.data.outputFormat ?? "default",
+            frameCount: node.data.frameCount ?? DEFAULT_FRAME_COUNT,
+            frameDurationMs: node.data.frameDurationMs ?? DEFAULT_FRAME_DURATION_MS,
+            svgModel: node.data.svgModel ?? DEFAULT_SVG_MODEL,
+          }}
+          onChange={(patch) => updateNodeData(node.id, patch)}
+        />
 
         {/* Execution Status / Progress */}
         {isRunning && (

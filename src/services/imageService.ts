@@ -90,9 +90,16 @@ export function formatSizeForModel(size: string, model: string): string {
   return size;
 }
 
-/** GIF/SVG output exists only on the gpt-image-2.6 family (flare / sunburst). */
+/**
+ * GIF/SVG output exists only on gpt-image-2.6-flare and gpt-image-2.6-sunburst.
+ * Matched by containment so gateway prefixes/suffixes still resolve.
+ */
 export function supportsRichOutput(model: string): boolean {
-  return /^gpt-image-2\.6(?:$|[-_.])/i.test(model.trim());
+  const id = model.toLowerCase();
+  return (
+    id.includes("gpt-image-2.6") &&
+    (id.includes("flare") || id.includes("sunburst"))
+  );
 }
 
 /** Collapses the stored choice to what the selected model can really produce. */

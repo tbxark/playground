@@ -7,7 +7,16 @@ import { cn } from "@/utils/cn";
 
 const FORMATS: OutputFormat[] = ["default", "gif", "svg"];
 
-type OutputFormatControlsProps = {
+export type OutputFormatValue = {
+  outputFormat: OutputFormat;
+  frameCount: number;
+  frameDurationMs: number;
+  svgModel: string;
+};
+
+type OutputFormatFieldsProps = {
+  value: OutputFormatValue;
+  onChange: (patch: Partial<OutputFormatValue>) => void;
   model: string;
   /** Managed sessions: the server fixes the SVG text model. */
   managed: boolean;
@@ -17,27 +26,25 @@ type OutputFormatControlsProps = {
 };
 
 /**
- * Output container picker for gpt-image-2.6 (raster / animated GIF / SVG).
- * Renders nothing for other models; the stored choice is ignored for them by
- * `effectiveOutputFormat`, so switching models never sends a stale format.
+ * Output container picker for gpt-image-2.6 flare/sunburst (raster / animated
+ * GIF / SVG). Renders nothing for other models; the stored choice is ignored
+ * for them by `effectiveOutputFormat`, so switching models never sends a stale
+ * format. Controlled so the prompt store and workflow node data share one UI.
  */
-export function OutputFormatControls({
+export function OutputFormatFields({
+  value,
+  onChange,
   model,
   managed,
   hasImageInputs,
   className,
-}: OutputFormatControlsProps) {
+}: OutputFormatFieldsProps) {
   const { t } = useTranslation();
-  const {
-    outputFormat,
-    frameCount,
-    frameDurationMs,
-    svgModel,
-    setOutputFormat,
-    setFrameCount,
-    setFrameDurationMs,
-    setSvgModel,
-  } = usePromptStore();
+  const { outputFormat, frameCount, frameDurationMs, svgModel } = value;
+  const setOutputFormat = (next: OutputFormat) => onChange({ outputFormat: next });
+  const setFrameCount = (next: number) => onChange({ frameCount: next });
+  const setFrameDurationMs = (next: number) => onChange({ frameDurationMs: next });
+  const setSvgModel = (next: string) => onChange({ svgModel: next });
 
   if (!supportsRichOutput(model)) return null;
 
@@ -133,5 +140,23 @@ export function OutputFormatControls({
         </p>
       )}
     </div>
+  );
+}
+
+/** Prompt-store bound variant used by Simple and the free canvas. */
+export function OutputFormatControls(
+  props: Omit<OutputFormatFieldsProps, "value" | "onChange">
+) {
+  const outputFormat = usePromptStore((state) => state.outputFormat);
+  const frameCount = usePromptStore((state) => state.frameCount);
+  const frameDurationMs = usePromptStore((state) => state.frameDurationMs);
+  const svgModel = usePromptStore((state) => state.svgModel);
+
+  return (
+    <OutputFormatFields
+      {...props}
+      value={{ outputFormat, frameCount, frameDurationMs, svgModel }}
+      onChange={(patch) => usePromptStore.setState(patch)}
+    />
   );
 }

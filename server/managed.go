@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -66,7 +65,12 @@ type managedGenerateRequest struct {
 
 const defaultSVGModel = "gpt-5.4-mini"
 
-var richOutputModelPattern = regexp.MustCompile(`(?i)^gpt-image-2\.6(?:$|[-_.])`)
+// supportsRichOutput mirrors supportsRichOutput in src/services/imageService.ts.
+func supportsRichOutput(model string) bool {
+	id := strings.ToLower(model)
+	return strings.Contains(id, "gpt-image-2.6") &&
+		(strings.Contains(id, "flare") || strings.Contains(id, "sunburst"))
+}
 
 // richOutputFields validates the GIF/SVG request and returns the extra upstream
 // payload fields. It mirrors richOutputPayload in functions/managed.ts. The
@@ -75,7 +79,7 @@ func richOutputFields(body managedGenerateRequest, svgModel string) (map[string]
 	if body.OutputFormat != "gif" && body.OutputFormat != "svg" {
 		return nil, "invalid_request"
 	}
-	if !richOutputModelPattern.MatchString(strings.TrimSpace(body.Model)) {
+	if !supportsRichOutput(body.Model) {
 		return nil, "output_format_unsupported"
 	}
 	if len(body.ImageURLs) > 0 || body.MaskURL != "" {
