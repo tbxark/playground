@@ -3,6 +3,15 @@ import type { ImageOptions } from "../../shared/imageModels";
 
 export type ProviderId = "apimart" | "openrouter" | "openai" | string;
 
+/**
+ * How requests with input images reach the gateway. `auto` sends the JSON form
+ * first and switches to multipart `/images/edits` once a gateway refuses base64
+ * (official OpenAI always uses edits). `generations` never switches; `edits`
+ * always sends input images as multipart. Text-only requests always use
+ * `/images/generations`.
+ */
+export type InputEndpointMode = "auto" | "generations" | "edits";
+
 export type ProviderCapabilities = {
   supportsText2Image: boolean;
   supportsImage2Image: boolean;
@@ -27,6 +36,7 @@ export type ProviderConfig = {
   models: ProviderModelDefinition[];
   isCustom?: boolean;
   capabilities: ProviderCapabilities;
+  inputEndpointMode?: InputEndpointMode;
 };
 
 export type GenerateParams = {

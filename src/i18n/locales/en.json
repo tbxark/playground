@@ -242,6 +242,7 @@
   "workflow": {
     "assistant": {
       "actionEnhance": "Expand & polish prompt",
+      "actionOptimize": "Optimize prompt",
       "actionTranslate": "Translate",
       "actionVision": "Reverse-engineer prompt",
       "altVisionInput": "Vision input",
@@ -251,11 +252,14 @@
       "generationFailed": "Generation failed",
       "imageSource": "Reference image source",
       "modeEnhance": "Text Expand",
+      "modeOptimize": "Optimize",
       "modeTranslate": "Translate",
       "modeVision": "Image to Text",
+      "optimizeTitle": "Tidy wording and structure only: keeps your subject and theme, applies requested changes (e.g. Christmas to Halloween), and adds no new detail",
       "outputLabel": "Generated prompt",
       "outputPlaceholder": "The generated prompt will appear here and can be connected to an image generator...",
       "placeholderDraft": "Enter a brief idea, e.g. cyberpunk city on a rainy night...",
+      "placeholderOptimize": "Paste a prompt to optimize, optionally with a change, e.g. switch the Christmas theme to Halloween...",
       "placeholderTranslate": "Enter a Chinese idea, e.g. neon cyberpunk street on a rainy night...",
       "removeImage": "Remove image",
       "thinkingStatus": "Thinking...",
@@ -333,8 +337,6 @@
     },
     "generator": {
       "altConnectedReference": "connected reference",
-      "altGeneratedOutput": "Generated Output",
-      "artworkName": "Workflow generated - {{model}}",
       "enableModelWarning": "Enable the current model in Settings first, or choose an enabled model",
       "failedMessage": "Generation failed: {{message}}",
       "gallerySaveFailed": "Result generated, but failed to save to gallery",
@@ -356,15 +358,12 @@
       "promptMergedTitle_one": "Merged {{count}} prompt input; they will be joined with \\n when executed",
       "promptMergedTitle_other": "Merged {{count}} prompt inputs; they will be joined with \\n when executed",
       "promptNotConnected": "No prompt connected",
-      "refineInFreeCanvas": "Refine in Free Canvas",
       "regenerate": "Regenerate",
       "rendering": "Rendering...",
       "retrySave": "Retry save",
       "runGenerate": "Generate",
-      "freeCanvasButtonTitle": "Load into Free Canvas for inpainting, outpainting or cropping",
       "textOnly": "Text-to-image only",
       "unknownError": "Unknown error",
-      "sentToFreeCanvasToast": "Sent to Free Canvas for further refinement",
       "stop": "Stop"
     },
     "help": {
@@ -399,9 +398,9 @@
       "portTitle": "{{direction}} port · {{name}} · {{type}}",
       "nodePromptDesc": "Write the image description; Polish expands it with the text model. Outputs a text prompt.",
       "nodeImageDesc": "Upload a local image or import the free-canvas main image. Outputs an image used as a generation reference.",
-      "nodeAssistantDesc": "Expand a prompt, reverse-engineer an image into a prompt, or translate Chinese into English. Its text output plugs into a generator.",
+      "nodeAssistantDesc": "Expand or optimize a prompt, reverse-engineer an image into a prompt, or translate Chinese into English. Its text output plugs into a generator.",
       "nodeGeneratorDesc": "Combines connected prompts and reference images, generates with an enabled model, ratio and resolution, and saves the result to the gallery; a failed save can be retried in the node.",
-      "nodePreviewDesc": "Sits after a generator to review the result: compare with the input, open it large, download it, or send it to the free canvas for refinement.",
+      "nodePreviewDesc": "Sits after a generator to review the result: open it large, download it, or send it to the free canvas for refinement.",
       "historyNote": "Undo restores nodes and connections only — generated results do not come back, and clearing the workflow discards results still being generated.",
       "gotIt": "Got it"
     },
@@ -427,14 +426,13 @@
       "resultImage": "Result image"
     },
     "preview": {
-      "altCurrent": "Current",
       "altFinalPreview": "Final Preview",
-      "altOriginal": "Original",
       "artworkName": "Result preview - {{id}}",
       "connectHint": "Connect a generator node's output port here",
       "downloadTitle": "Download the high-resolution original",
       "noImage": "No generated image received yet",
       "saveImageTitle": "Save image",
+      "downloadFailed": "Download failed. Check the network or CORS proxy, then try again.",
       "sendToFreeCanvas": "Send to Free Canvas",
       "freeCanvasTitle": "Load into Free Canvas for inpainting, outpainting or cropping",
       "sentToFreeCanvasToast": "Sent to Free Canvas for further refinement"
@@ -1497,6 +1495,19 @@
     "sessionExpired": "Server session expired, please log in again."
   },
   "imageOptions": {
+    "endpoint": {
+      "label": "Input endpoint",
+      "mode": {
+        "auto": "Auto",
+        "generations": "Generate",
+        "edits": "Edit"
+      },
+      "hint": {
+        "auto": "With input images, the request goes as JSON to /v1/images/generations first. If the gateway refuses base64, the same request is resent to /v1/images/edits as multipart, and that gateway is remembered for this session.",
+        "generations": "With input images, the request always goes as JSON to /v1/images/generations. A refusal is reported as an error; nothing is retried.",
+        "edits": "With input images, the request always goes to /v1/images/edits as multipart. Text-only requests still use /v1/images/generations."
+      }
+    },
     "output": "Output",
     "quality": "Quality",
     "auto": "Auto",

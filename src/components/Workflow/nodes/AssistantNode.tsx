@@ -8,6 +8,7 @@ import {
   ScanEyeIcon,
   SparklesIcon,
   UploadIcon,
+  WandSparklesIcon,
   XIcon,
 } from "lucide-react";
 import { WorkflowNode, useWorkflowStore } from "../../../stores/useWorkflowStore";
@@ -96,7 +97,7 @@ export function AssistantNode({ node }: { node: WorkflowNode }) {
     >
       <div className="flex flex-col gap-3">
         {/* Mode Selector Segment */}
-        <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/10 text-xs">
+        <div className="grid grid-cols-2 gap-1 bg-white/5 p-1 rounded-xl border border-white/10 text-xs">
           <button
             type="button"
             onClick={() => updateNodeData(node.id, { assistantMode: "enhance" })}
@@ -110,6 +111,21 @@ export function AssistantNode({ node }: { node: WorkflowNode }) {
           >
             <SparklesIcon className="size-3" />
             <span>{t("workflow.assistant.modeEnhance")}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => updateNodeData(node.id, { assistantMode: "optimize" })}
+            className={cn(
+              "flex-1 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer flex items-center justify-center gap-1",
+              mode === "optimize"
+                ? "bg-emerald-500 text-zinc-950 font-bold shadow-md"
+                : "text-zinc-400 hover:text-white"
+            )}
+            title={t("workflow.assistant.optimizeTitle")}
+          >
+            <WandSparklesIcon className="size-3" />
+            <span>{t("workflow.assistant.modeOptimize")}</span>
           </button>
 
           <button
@@ -218,7 +234,7 @@ export function AssistantNode({ node }: { node: WorkflowNode }) {
             </span>
 
             {textEdge && connectedText ? (
-              <div className="p-2 rounded-xl bg-purple-950/30 border border-purple-500/30 text-zinc-200 text-xs leading-relaxed max-h-20 overflow-y-auto">
+              <div className="nowheel p-2 rounded-xl bg-purple-950/30 border border-purple-500/30 text-zinc-200 text-xs leading-relaxed max-h-20 overflow-y-auto">
                 {connectedText}
               </div>
             ) : (
@@ -226,8 +242,14 @@ export function AssistantNode({ node }: { node: WorkflowNode }) {
                 rows={2}
                 value={node.data.inputPrompt || ""}
                 onChange={(e) => updateNodeData(node.id, { inputPrompt: e.target.value })}
-                placeholder={mode === "translate" ? t("workflow.assistant.placeholderTranslate") : t("workflow.assistant.placeholderDraft")}
-                className="w-full rounded-xl bg-zinc-900 border border-white/10 p-2 text-xs text-zinc-100 placeholder:text-zinc-500 resize-none outline-none focus:border-amber-400/50"
+                placeholder={
+                  mode === "translate"
+                    ? t("workflow.assistant.placeholderTranslate")
+                    : mode === "optimize"
+                    ? t("workflow.assistant.placeholderOptimize")
+                    : t("workflow.assistant.placeholderDraft")
+                }
+                className="nowheel w-full rounded-xl bg-zinc-900 border border-white/10 p-2 text-xs text-zinc-100 placeholder:text-zinc-500 resize-none outline-none focus:border-amber-400/50"
               />
             )}
           </div>
@@ -254,7 +276,7 @@ export function AssistantNode({ node }: { node: WorkflowNode }) {
           ) : (
             <>
               <SparklesIcon className="size-3.5" />
-              <span>{mode === "vision" ? t("workflow.assistant.actionVision") : mode === "translate" ? t("workflow.assistant.actionTranslate") : t("workflow.assistant.actionEnhance")}</span>
+              <span>{mode === "vision" ? t("workflow.assistant.actionVision") : mode === "translate" ? t("workflow.assistant.actionTranslate") : mode === "optimize" ? t("workflow.assistant.actionOptimize") : t("workflow.assistant.actionEnhance")}</span>
             </>
           )}
         </Button>
@@ -318,7 +340,7 @@ export function AssistantNode({ node }: { node: WorkflowNode }) {
                     outputPrompt: undefined,
                   })
                 }
-                className="w-full rounded-xl bg-purple-950/20 border border-purple-500/30 p-2 text-xs text-zinc-100 leading-relaxed font-sans resize-none outline-none focus:border-purple-400"
+                className="nowheel w-full rounded-xl bg-purple-950/20 border border-purple-500/30 p-2 text-xs text-zinc-100 leading-relaxed font-sans resize-none outline-none focus:border-purple-400"
                 placeholder={t("workflow.assistant.outputPlaceholder")}
               />
             )}

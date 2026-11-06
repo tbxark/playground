@@ -1,4 +1,4 @@
-import OpenAI, { type ClientOptions } from "openai";
+import OpenAI, { APIError, type ClientOptions } from "openai";
 import { i18n } from "@/i18n";
 import {
   CorsProxyMode,
@@ -8,7 +8,8 @@ import {
   normalizeCorsProxyMode,
 } from "@/utils/proxy";
 import { maskFieldName, resolveImageRequest } from "../../shared/imageModels";
-import { GenerateParams } from "./types";
+import { dataUrlToBlob, fetchAsBlob } from "@/utils/file";
+import { GenerateParams, InputEndpointMode } from "./types";
 
 export type ModelOption = {
   id: string;
@@ -25,6 +26,8 @@ export type ImageApiConfig = {
   selectedModel: string;
   models: ModelOption[];
   enabledModelIds: string[];
+  /** Missing in snapshots from before the setting existed: treated as `auto`. */
+  inputEndpointMode?: InputEndpointMode;
 };
 
 // Known model names with Chinese descriptors resolve through i18n keys;
@@ -179,7 +182,7 @@ export function filterImageGenerationModels(rawList: RawModelItem[]): RawModelIt
   return filtered;
 }
 
-function isOfficialOpenAiEndpoint(apiBaseUrl: string): boolean {
+export function isOfficialOpenAiEndpoint(apiBaseUrl: string): boolean {
   try {
     return new URL(apiBaseUrl).host === "api.openai.com";
   } catch {
@@ -665,6 +668,64 @@ function pollAsyncTask(
 }
 
 /**
+ * Turn an image source (data URL or http(s) URL) into a File for a multipart
+ * part. http sources go through corsAwareFetch, like every other download.
+ */
+async function toUploadFile(
+  source: string,
+  name: string,
+  params: GenerateParams
+): Promise<File> {
+  const blob = source.startsWith("data:")
+    ? dataUrlToBlob(source)
+    : await fetchAsBlob(
+        source,
+        { corsProxy: params.corsProxy, corsProxyMode: params.corsProxyMode },
+        params.signal
+      );
+  return new File([blob], name, { type: blob.type || "image/png" });
+}
+
+/**
+ * `/images/edits` takes multipart parts instead of JSON. The shared payload
+ * (model, prompt, size, extension fields) is reused as-is; the inputs become
+ * `image` (one file) or `image[]` (several, the SDK's array encoding) and the
+ * mask becomes `mask`.
+ */
+async function buildEditRequest(
+  payload: Record<string, unknown>,
+  params: GenerateParams
+): Promise<OpenAI.Images.ImageEditParams> {
+  const images = await Promise.all(
+    (params.imageUrls ?? []).map((source, index) =>
+      toUploadFile(source, `image-${index + 1}.png`, params)
+    )
+  );
+  const request: Record<string, unknown> = {
+    ...payload,
+    image: images.length === 1 ? images[0] : images,
+  };
+  if (params.maskUrl) {
+    request.mask = await toUploadFile(params.maskUrl, "mask.png", params);
+  }
+  return request as unknown as OpenAI.Images.ImageEditParams;
+}
+
+/**
+ * Gateways that refused base64 images in the JSON body of /images/generations.
+ * Learned from the first refusal and kept for the session (outside reactive
+ * state, like the queue's AbortControllers), so later requests with input
+ * images skip the JSON attempt.
+ */
+const gatewaysRejectingJsonImages = new Set<string>();
+
+function isBase64InputRejected(error: unknown): boolean {
+  return (
+    error instanceof APIError && error.code === "base64_input_not_supported"
+  );
+}
+
+/**
  * Generate image using OpenAI SDK with OpenAI-compatible Image API
  * Reference: https://docs.apimart.ai/en#image-creation-api
  */
@@ -672,12 +733,13 @@ export async function generateImageWithOpenAiCompatible(
   config: {
     apiBaseUrl: string;
     apiKey: string;
+    inputEndpointMode?: InputEndpointMode;
     corsProxy?: string;
     corsProxyMode?: CorsProxyMode;
   },
   params: GenerateParams
 ): Promise<string> {
-  const { apiBaseUrl, apiKey, corsProxy, corsProxyMode } = config;
+  const { apiBaseUrl, apiKey, inputEndpointMode, corsProxy, corsProxyMode } = config;
 
   if (!apiKey || !apiKey.trim()) {
     throw new Error(i18n.t("imgsvc.missingApiKey"));
@@ -689,11 +751,20 @@ export async function generateImageWithOpenAiCompatible(
 
   const officialEndpoint = isOfficialOpenAiEndpoint(apiBaseUrl);
   const isDalle = params.model.toLowerCase().startsWith("dall-e");
+  const hasInputImages = (params.imageUrls?.length ?? 0) > 0;
+  const inputMode = inputEndpointMode ?? "auto";
+  // Official OpenAI accepts reference images only on /images/edits. Under
+  // "auto" other gateways get the JSON form first, unless they already refused
+  // it this session; "edits" pins multipart and "generations" pins JSON.
+  const editsFirst =
+    hasInputImages &&
+    (inputMode === "edits" ||
+      (inputMode === "auto" &&
+        (officialEndpoint || gatewaysRejectingJsonImages.has(apiBaseUrl))));
 
-  if (officialEndpoint && ((params.imageUrls?.length ?? 0) > 0 || params.maskUrl)) {
-    // /images/generations has no image inputs. Official editing lives on
-    // /images/edits (multipart), which this path does not implement. Failing
-    // loudly beats sending a text-only request and billing for the wrong image.
+  if (officialEndpoint && (hasInputImages || params.maskUrl) && !editsFirst) {
+    // /images/generations takes no reference images or masks. Failing loudly
+    // beats sending a text-only request and billing for the wrong image.
     throw new Error(i18n.t("imgsvc.officialImageEditUnsupported"));
   }
 
@@ -736,21 +807,6 @@ export async function generateImageWithOpenAiCompatible(
       payload.prompt_weight = params.cfgScale;
     }
 
-    // One canonical array plus the single-image alias some providers still
-    // require. The old payload echoed the same base64 into four fields
-    // (image/image_url/image_urls/reference_images), quadrupling the request
-    // body for the main image and doubling it for every reference.
-    if (params.imageUrls && params.imageUrls.length > 0) {
-      payload.image_urls = params.imageUrls;
-      if (params.imageUrls.length === 1) {
-        payload.image = params.imageUrls[0];
-      }
-    }
-
-    if (params.maskUrl) {
-      payload[maskFieldName(params.model)] = params.maskUrl;
-    }
-
     // gpt-image-2.5 / 2.6 have their own size, resolution and option rules
     // (GIF frame sizes, ext tiers, quality, output format, ...). Image inputs
     // are forwarded as-is; gateways that cannot combine them with GIF/SVG
@@ -770,10 +826,48 @@ export async function generateImageWithOpenAiCompatible(
     }
   }
 
-  const response = (await client.images.generate(
-    payload as unknown as OpenAI.Images.ImageGenerateParams,
-    { signal: params.signal }
-  )) as unknown as Record<string, any>;
+  // JSON form of the request. The old payload echoed the same base64 into four
+  // fields (image/image_url/image_urls/reference_images), quadrupling the body
+  // for the main image and doubling it for every reference; one canonical
+  // array plus the single-image alias some providers still require.
+  const jsonPayload: Record<string, unknown> = { ...payload };
+  if (hasInputImages && !officialEndpoint) {
+    jsonPayload.image_urls = params.imageUrls;
+    if (params.imageUrls?.length === 1) {
+      jsonPayload.image = params.imageUrls[0];
+    }
+    if (params.maskUrl) {
+      jsonPayload[maskFieldName(params.model)] = params.maskUrl;
+    }
+  }
+
+  const requestGenerations = async () =>
+    (await client.images.generate(
+      jsonPayload as unknown as OpenAI.Images.ImageGenerateParams,
+      { signal: params.signal }
+    )) as unknown as Record<string, any>;
+  const requestEdits = async () =>
+    (await client.images.edit(await buildEditRequest(payload, params), {
+      signal: params.signal,
+    })) as unknown as Record<string, any>;
+
+  let response: Record<string, any>;
+  if (editsFirst) {
+    response = await requestEdits();
+  } else {
+    try {
+      response = await requestGenerations();
+    } catch (error) {
+      // Only "auto" learns from a refusal; a pinned mode reports it as is.
+      if (inputMode !== "auto" || !hasInputImages || !isBase64InputRejected(error)) {
+        throw error;
+      }
+      // Same request, multipart. The gateway is remembered so the next request
+      // with input images does not pay for the refused JSON attempt.
+      gatewaysRejectingJsonImages.add(apiBaseUrl);
+      response = await requestEdits();
+    }
+  }
 
   // 1. Direct synchronous response check (e.g. OpenAI official returning data array with url)
   if (Array.isArray(response?.data) && response.data[0]?.url) {

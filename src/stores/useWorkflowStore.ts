@@ -66,7 +66,7 @@ export type WorkflowNodeData = {
   generationTimeMs?: number;
 
   // AI Assistant (image-to-text / text-to-text)
-  assistantMode?: "enhance" | "vision" | "translate";
+  assistantMode?: "enhance" | "optimize" | "vision" | "translate";
   inputPrompt?: string;
   inputImageUrl?: string;
   outputPrompt?: string;
@@ -949,11 +949,7 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
               throw new Error(i18n.t("workflowStore.errorNeedPromptDraft"));
             }
 
-            result = await requestPolish(
-              inputText.trim(),
-              mode === "translate" ? "translate" : "enhance",
-              controller.signal
-            );
+            result = await requestPolish(inputText.trim(), mode, controller.signal);
           }
 
           get().updateNodeData(

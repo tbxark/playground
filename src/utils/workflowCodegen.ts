@@ -1,8 +1,13 @@
 import type { WorkflowEdge, WorkflowNode } from "../stores/useWorkflowStore";
-import { formatSizeForModel } from "../services/imageService";
+import {
+  formatSizeForModel,
+  isOfficialOpenAiEndpoint,
+} from "../services/imageService";
+import type { InputEndpointMode } from "../services/types";
 import { resolveImageRequest } from "../../shared/imageModels";
 import {
   PROMPT_ENHANCE_SYSTEM,
+  PROMPT_OPTIMIZE_SYSTEM,
   PROMPT_TRANSLATE_SYSTEM,
   PROMPT_VISION_SYSTEM,
   PROMPT_VISION_USER,
@@ -26,6 +31,7 @@ export type WorkflowCodegenOptions = {
     apiBaseUrl: string;
     model: string;
     enabledModelIds: string[];
+    inputEndpointMode?: InputEndpointMode;
   };
   llm: {
     apiBaseUrl: string;
@@ -66,6 +72,7 @@ const DEFAULT_RESOLUTION = "1k";
 
 const SYSTEM_CONSTANTS = {
   enhance: "SYSTEM_ENHANCE",
+  optimize: "SYSTEM_OPTIMIZE",
   translate: "SYSTEM_TRANSLATE",
   vision: "SYSTEM_VISION",
   visionUser: "VISION_USER_PROMPT",
@@ -359,7 +366,8 @@ function emitAssistant(
       `// TODO: select an assistant text model; the export falls back to "${commentText(model)}".`
     );
   }
-  ctx.usedSystems.add(mode === "translate" ? "translate" : "enhance");
+  const textMode = mode === "translate" || mode === "optimize" ? mode : "enhance";
+  ctx.usedSystems.add(textMode);
 
   const parts: string[] = [];
   if (node.data.inputPrompt?.trim()) {
@@ -394,11 +402,7 @@ function emitAssistant(
   lines.push(
     `const ${varName} = await runChat(llmClient, {`,
     `  model: ${JSON.stringify(model)},`,
-    `  system: ${
-      mode === "translate"
-        ? SYSTEM_CONSTANTS.translate
-        : SYSTEM_CONSTANTS.enhance
-    },`,
+    `  system: ${SYSTEM_CONSTANTS[textMode]},`,
     `  user: ${userExpression},`,
     "  temperature: 0.7,",
     "});"
@@ -696,23 +700,45 @@ const HELPER_BLOCKS = {
     "    payload.cfg_scale = options.cfgScale;",
     "    payload.prompt_weight = options.cfgScale;",
     "  }",
-    "  if (options.imageUrls?.length) {",
-    "    payload.image = options.imageUrls[0];",
-    "    payload.image_url = options.imageUrls[0];",
-    "    payload.image_urls = options.imageUrls;",
-    "    payload.reference_images = options.imageUrls;",
-    "  }",
-    "",
     "  if (options.extra) {",
     "    // gpt-image-2.5 / 2.6 reject response_format.",
     "    delete payload.response_format;",
     "    Object.assign(payload, options.extra);",
     "  }",
     "",
-    "  const response = (await client.images.generate(",
-    "    payload as unknown as OpenAI.Images.ImageGenerateParams,",
-    "    { signal: AbortSignal.timeout(10 * 60 * 1000) }",
-    "  )) as unknown as Record<string, unknown>;",
+    "  // JSON form: references ride in the body as one canonical array plus the",
+    "  // single-image alias some gateways still require.",
+    "  const jsonPayload: Record<string, unknown> = { ...payload };",
+    "  if (options.imageUrls?.length) {",
+    "    jsonPayload.image = options.imageUrls[0];",
+    "    jsonPayload.image_url = options.imageUrls[0];",
+    "    jsonPayload.image_urls = options.imageUrls;",
+    "    jsonPayload.reference_images = options.imageUrls;",
+    "  }",
+    "",
+    "  // Official OpenAI takes reference images only on /images/edits. Other",
+    "  // gateways get the JSON form until one refuses base64, then the same",
+    "  // request is resent as multipart.",
+    "  const requestEdits = async () =>",
+    "    (await client.images.edit(",
+    "      await toEditParams(payload, options.imageUrls ?? []),",
+    "      { signal: AbortSignal.timeout(10 * 60 * 1000) }",
+    "    )) as unknown as Record<string, unknown>;",
+    "  let response: Record<string, unknown>;",
+    "  if (imageInputsNeedEdits && options.imageUrls?.length) {",
+    "    response = await requestEdits();",
+    "  } else {",
+    "    try {",
+    "      response = (await client.images.generate(",
+    "        jsonPayload as unknown as OpenAI.Images.ImageGenerateParams,",
+    "        { signal: AbortSignal.timeout(10 * 60 * 1000) }",
+    "      )) as unknown as Record<string, unknown>;",
+    "    } catch (error) {",
+    "      if (!allowEditsFallback || !options.imageUrls?.length || !isBase64InputRejected(error)) throw error;",
+    "      imageInputsNeedEdits = true;",
+    "      response = await requestEdits();",
+    "    }",
+    "  }",
     "",
     "  const data = Array.isArray(response.data) ? response.data[0] : undefined;",
     '  if (data && typeof data === "object") {',
@@ -728,6 +754,45 @@ const HELPER_BLOCKS = {
     "  const fallback = extractImageUrl(response);",
     "  if (fallback) return fallback;",
     '  throw new Error("The image API returned neither an image URL nor a task id.");',
+    "}",
+  ],
+  isBase64InputRejected: [
+    "function isBase64InputRejected(error: unknown): boolean {",
+    '  return error instanceof APIError && error.code === "base64_input_not_supported";',
+    "}",
+  ],
+  toEditParams: [
+    "/** /images/edits takes multipart parts: inputs become `image` (or `image[]`) files. */",
+    "async function toEditParams(",
+    "  payload: Record<string, unknown>,",
+    "  imageUrls: string[]",
+    "): Promise<OpenAI.Images.ImageEditParams> {",
+    "  const images = await Promise.all(",
+    "    imageUrls.map(async (url, index) => {",
+    "      const name = `image-${index + 1}.png`;",
+    '      if (url.startsWith("data:")) {',
+    '        const comma = url.indexOf(",");',
+    "        const meta = url.slice(0, comma);",
+    '        const type = meta.slice("data:".length).split(";")[0] || "image/png";',
+    "        const data = url.slice(comma + 1);",
+    "        const buffer = meta.includes(\";base64\")",
+    '          ? Buffer.from(data, "base64")',
+    "          : Buffer.from(decodeURIComponent(data));",
+    "        return toFile(buffer, name, { type });",
+    "      }",
+    "      const response = await fetch(url);",
+    "      if (!response.ok) {",
+    "        throw new Error(`Failed to download the input image: ${response.status}`);",
+    "      }",
+    "      return toFile(Buffer.from(await response.arrayBuffer()), name, {",
+    '        type: response.headers.get("content-type") ?? "image/png",',
+    "      });",
+    "    })",
+    "  );",
+    "  return {",
+    "    ...payload,",
+    "    image: images.length === 1 ? images[0] : images,",
+    "  } as unknown as OpenAI.Images.ImageEditParams;",
     "}",
   ],
   saveImage: [
@@ -915,7 +980,13 @@ export function generateWorkflowCode(
 
   const usesAnyClient = hasGenerator || hasAssistant;
   const imports: string[] = [];
-  if (usesAnyClient) imports.push('import OpenAI from "openai";');
+  if (usesAnyClient) {
+    imports.push(
+      hasGenerator
+        ? 'import OpenAI, { APIError, toFile } from "openai";'
+        : 'import OpenAI from "openai";'
+    );
+  }
   if (hasGenerator || ctx.usedImageToDataUrl) {
     const fsNames: string[] = [];
     if (hasGenerator) fsNames.push("mkdir", "writeFile");
@@ -984,6 +1055,7 @@ export function generateWorkflowCode(
     ...setup,
   ];
 
+  const inputMode = options.image.inputEndpointMode ?? "auto";
   const clientSetup: string[] = [];
   if (hasGenerator) {
     clientSetup.push(
@@ -993,6 +1065,15 @@ export function generateWorkflowCode(
         options.image.apiBaseUrl
       )},`,
       "});",
+      "",
+      "// Mirrors the app's input-endpoint setting: \"auto\" starts on JSON and flips",
+      "// to multipart edits once the gateway refuses base64 (official OpenAI starts on edits).",
+      `let imageInputsNeedEdits = ${JSON.stringify(
+        inputMode === "edits" ||
+          (inputMode === "auto" &&
+            isOfficialOpenAiEndpoint(options.image.apiBaseUrl))
+      )};`,
+      `const allowEditsFallback = ${JSON.stringify(inputMode === "auto")};`,
       ""
     );
   }
@@ -1015,6 +1096,14 @@ export function generateWorkflowCode(
     promptConstants.push(
       `const ${SYSTEM_CONSTANTS.enhance} = ${JSON.stringify(
         PROMPT_ENHANCE_SYSTEM
+      )};`,
+      ""
+    );
+  }
+  if (ctx.usedSystems.has("optimize")) {
+    promptConstants.push(
+      `const ${SYSTEM_CONSTANTS.optimize} = ${JSON.stringify(
+        PROMPT_OPTIMIZE_SYSTEM
       )};`,
       ""
     );
@@ -1058,6 +1147,10 @@ export function generateWorkflowCode(
       ...HELPER_BLOCKS.readTaskStatus,
       "",
       ...HELPER_BLOCKS.waitForTask,
+      "",
+      ...HELPER_BLOCKS.isBase64InputRejected,
+      "",
+      ...HELPER_BLOCKS.toEditParams,
       "",
       ...HELPER_BLOCKS.generateImage,
       "",

@@ -82,7 +82,8 @@ export function PromptNode({ node }: { node: WorkflowNode }) {
           placeholder={t("workflow.prompt.promptPlaceholder")}
           value={promptText}
           onChange={(e) => updateNodeData(node.id, { promptText: e.target.value })}
-          className="min-h-[85px] text-xs bg-black/40 border-white/10 text-zinc-100 placeholder:text-zinc-500 font-sans resize-y"
+          // nowheel: wheel/pinch inside the text scrolls it instead of zooming the canvas
+          className="nowheel min-h-[85px] text-xs bg-black/40 border-white/10 text-zinc-100 placeholder:text-zinc-500 font-sans resize-y"
         />
 
         {/* Quick Style Chips */}

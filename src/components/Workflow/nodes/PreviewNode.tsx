@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -8,14 +8,11 @@ import {
   Maximize2Icon,
   SparklesIcon,
 } from "lucide-react";
-import {
-  ReactCompareSlider,
-  ReactCompareSliderImage,
-} from "react-compare-slider";
 import { WorkflowNode, useWorkflowStore } from "../../../stores/useWorkflowStore";
 import { WorkflowNodeWrapper, WorkflowPortDef } from "./WorkflowNodeWrapper";
 import { Button } from "../../ui/button";
-import { downloadFile } from "../../../utils/file";
+import { downloadFile, fetchAsBlob } from "../../../utils/file";
+import { useConfigStore } from "../../../stores/useConfigStore";
 import { useFreeCanvasStore } from "../../../stores/useFreeCanvasStore";
 import { useLightboxStore } from "../../../stores/useLightboxStore";
 
@@ -29,10 +26,10 @@ export function PreviewNode({ node }: { node: WorkflowNode }) {
   const { edges, nodes } = useWorkflowStore();
   const addExternalImage = useFreeCanvasStore((state) => state.addExternalImage);
   const openLightbox = useLightboxStore((state) => state.open);
-  const [comparePos, setComparePos] = useState(50);
 
   // Find incoming image dynamically if not directly set
   let displayUrl = node.data.previewUrl;
+  // Only forwarded to the free canvas; the node itself shows the result alone.
   let compareUrl = node.data.compareUrl;
 
   const incomingEdge = edges.find(
@@ -46,6 +43,22 @@ export function PreviewNode({ node }: { node: WorkflowNode }) {
       displayUrl = sourceNode.data.imageUrl;
     }
   }
+
+  const handleDownload = async (url: string) => {
+    // A remote result is cross-origin, and downloadFile silently ignores it
+    // (the <a download> would navigate away). Resolve the bytes first, through
+    // the CORS proxy when configured, the same way the image workspace does.
+    try {
+      const isLocal = url.startsWith("data:") || url.startsWith("blob:");
+      const { corsProxy, corsProxyMode } = useConfigStore.getState();
+      const blob = isLocal
+        ? await (await fetch(url)).blob()
+        : await fetchAsBlob(url, { corsProxy: corsProxy || undefined, corsProxyMode });
+      downloadFile(blob, `flow_result_${node.id}.png`);
+    } catch {
+      toast.error(t("workflow.preview.downloadFailed"));
+    }
+  };
 
   const handleSendToFreeCanvas = async () => {
     if (!displayUrl) return;
@@ -85,7 +98,6 @@ export function PreviewNode({ node }: { node: WorkflowNode }) {
                     id: node.id.slice(-4),
                   }),
                   subtitle: t("workflow.preview.altFinalPreview"),
-                  compareSrc: compareUrl,
                   fileName: `flow_${node.id}.png`,
                 })
               }
@@ -98,7 +110,7 @@ export function PreviewNode({ node }: { node: WorkflowNode }) {
             <Button
               variant="ghost"
               size="icon-xs"
-              onClick={() => downloadFile(displayUrl!, `flow_result_${node.id}.png`)}
+              onClick={() => void handleDownload(displayUrl!)}
               className="text-zinc-400 hover:text-white"
               title={t("workflow.preview.downloadTitle")}
             >
@@ -113,44 +125,11 @@ export function PreviewNode({ node }: { node: WorkflowNode }) {
           <div className="flex flex-col gap-2">
             {/* Image viewer container */}
             <div className="relative rounded-xl overflow-hidden border border-white/10 bg-black/60 aspect-square flex items-center justify-center">
-              {compareUrl ? (
-                // Split slider comparison. Reuses react-compare-slider so the
-                // original stays a clipped full-size image instead of being
-                // squeezed into the revealed width.
-                <ReactCompareSlider
-                  className="h-full w-full"
-                  defaultPosition={comparePos}
-                  onPositionChange={setComparePos}
-                  itemOne={
-                    <ReactCompareSliderImage
-                      src={compareUrl}
-                      alt={t("workflow.preview.altOriginal")}
-                      style={{
-                        objectFit: "contain",
-                        width: "100%",
-                        height: "100%",
-                      }}
-                    />
-                  }
-                  itemTwo={
-                    <ReactCompareSliderImage
-                      src={displayUrl}
-                      alt={t("workflow.preview.altCurrent")}
-                      style={{
-                        objectFit: "contain",
-                        width: "100%",
-                        height: "100%",
-                      }}
-                    />
-                  }
-                />
-              ) : (
-                <img
-                  src={displayUrl}
-                  alt={t("workflow.preview.altFinalPreview")}
-                  className="w-full h-full object-contain"
-                />
-              )}
+              <img
+                src={displayUrl}
+                alt={t("workflow.preview.altFinalPreview")}
+                className="w-full h-full object-contain"
+              />
             </div>
 
             {/* Quick Actions */}
@@ -169,7 +148,7 @@ export function PreviewNode({ node }: { node: WorkflowNode }) {
               <Button
                 variant="outline"
                 size="xs"
-                onClick={() => downloadFile(displayUrl!, `flow_${node.id}.png`)}
+                onClick={() => void handleDownload(displayUrl!)}
                 className="h-7 border-white/10 bg-white/5 hover:bg-white/10 text-zinc-300 text-xs px-2.5"
                 title={t("workflow.preview.saveImageTitle")}
               >

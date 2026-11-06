@@ -33,6 +33,7 @@ export async function dispatchGenerate(
     {
       apiBaseUrl,
       apiKey,
+      inputEndpointMode: provider.inputEndpointMode,
       corsProxy: params.corsProxy,
       corsProxyMode: params.corsProxyMode,
     },

@@ -31,6 +31,7 @@ import { useLightboxStore } from "../../stores/useLightboxStore";
 import { useGenerateAction } from "../../hooks/useGenerateAction";
 import { useRuntimeImageState } from "../../hooks/useRuntimeImageState";
 import { PromptImageOptions } from "@/components/ImageOptions/ImageOptionsPanel";
+import { InputEndpointModeControl } from "@/components/ImageOptions/InputEndpointModeControl";
 import { availableResolutions, selectedResolution } from "../../../shared/imageModels";
 import { useSimpleEdit } from "../../hooks/useSimpleEdit";
 import { isImeComposing, isOverlayOpen } from "@/utils/keyboard";
@@ -520,6 +521,8 @@ export function SimpleGeneratePanel() {
                   </button>
                 ))}
               </div>
+
+              <InputEndpointModeControl />
 
               <button
                 type="button"

@@ -74,7 +74,7 @@ export type ServerGenerateRequest = {
 };
 
 export type ServerAssistantRequest =
-  | { kind: "polish" | "translate"; prompt: string }
+  | { kind: "polish" | "optimize" | "translate"; prompt: string }
   | { kind: "vision"; image: string };
 
 export type ServerAssistantResponse = {

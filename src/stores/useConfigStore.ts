@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { ProviderConfig, ProviderModelDefinition } from "../services/types";
+import {
+  InputEndpointMode,
+  ProviderConfig,
+  ProviderModelDefinition,
+} from "../services/types";
 import { LlmConfig } from "../services/llmAssistant";
 import { i18n } from "@/i18n";
 import { CorsProxyMode, normalizeCorsProxyMode } from "@/utils/proxy";
@@ -72,7 +76,12 @@ const DEFAULT_IMAGE_CONFIG: ImageApiConfig = {
   selectedModel: "",
   models: [],
   enabledModelIds: [],
+  inputEndpointMode: "auto",
 };
+
+function normalizeInputEndpointMode(value: unknown): InputEndpointMode {
+  return value === "generations" || value === "edits" ? value : "auto";
+}
 
 function clampImportedNumber(
   value: unknown,
@@ -144,6 +153,7 @@ function normalizeImportedImageConfig(
     selectedModel,
     models,
     enabledModelIds,
+    inputEndpointMode: normalizeInputEndpointMode(raw.inputEndpointMode),
   };
 }
 
@@ -209,6 +219,7 @@ function buildCompatibilityProviders(imageConfig: ImageApiConfig): ProviderConfi
         id: m.id,
         name: m.name || m.id,
       })),
+      inputEndpointMode: imageConfig.inputEndpointMode ?? "auto",
     },
   ];
 }

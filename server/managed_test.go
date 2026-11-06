@@ -418,6 +418,44 @@ func TestManagedAssistantRequiresConfiguredModel(t *testing.T) {
 	}
 }
 
+func TestManagedAssistantOptimizeSendsOptimizePrompt(t *testing.T) {
+	recorder := &captureRecorder{}
+	upstreamServer := httptest.NewServer(recorder.handler(http.StatusOK, `{
+		"choices":[{"message":{"role":"assistant","content":"optimized"}}]
+	}`))
+	defer upstreamServer.Close()
+	cfg := managedTestConfig(t, upstreamServer.URL)
+	server := newTestServer(t, cfg)
+
+	request := managedRequest(t, cfg, http.MethodPost, server.URL+managedAssistantPath, map[string]any{
+		"kind":   "optimize",
+		"prompt": "圣诞节主题的客厅",
+	})
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("assistant: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.StatusCode)
+	}
+
+	requests := recorder.requests()
+	if len(requests) != 1 {
+		t.Fatalf("upstream requests = %d, want 1", len(requests))
+	}
+	var payload struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(requests[0].body), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.Messages) != 2 || payload.Messages[0].Content != promptOptimizeSystem {
+		t.Errorf("messages = %+v, want optimize system prompt first", payload.Messages)
+	}
+}
+
 func TestManagedRoutesRejectCrossOrigin(t *testing.T) {
 	recorder := &captureRecorder{}
 	upstreamServer := httptest.NewServer(recorder.handler(http.StatusOK, `{}`))

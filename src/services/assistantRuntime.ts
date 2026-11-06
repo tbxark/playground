@@ -1,6 +1,11 @@
 import { useConfigStore } from "@/stores/useConfigStore";
 import { getRuntimeMode } from "./runtimeConfig";
-import { imageToPrompt, polishPrompt, type LlmConfig } from "./llmAssistant";
+import {
+  imageToPrompt,
+  polishPrompt,
+  type LlmConfig,
+  type PromptTextMode,
+} from "./llmAssistant";
 import { managedAssistant } from "./managedBackend";
 
 function localLlmConfig(): LlmConfig {
@@ -12,15 +17,16 @@ function localLlmConfig(): LlmConfig {
   };
 }
 
-/** Polish/translate through the active backend. */
+/** Expand/optimize/translate through the active backend. */
 export function requestPolish(
   prompt: string,
-  mode: "enhance" | "translate" = "enhance",
+  mode: PromptTextMode = "enhance",
   signal?: AbortSignal
 ): Promise<string> {
   if (getRuntimeMode() === "managed") {
+    // The managed contract keeps the historical "polish" kind for expansion.
     return managedAssistant(
-      { kind: mode === "translate" ? "translate" : "polish", prompt },
+      { kind: mode === "enhance" ? "polish" : mode, prompt },
       signal
     );
   }

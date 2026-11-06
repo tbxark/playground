@@ -238,6 +238,7 @@
   "workflow": {
     "assistant": {
       "actionEnhance": "扩写润色提示词",
+      "actionOptimize": "优化提示词",
       "actionTranslate": "精准翻译",
       "actionVision": "识图反推提示词",
       "altVisionInput": "视觉输入图",
@@ -247,11 +248,14 @@
       "generationFailed": "生成失败",
       "imageSource": "参考图片源",
       "modeEnhance": "文生文 扩写",
+      "modeOptimize": "优化",
       "modeTranslate": "中译英",
       "modeVision": "图生文 识图",
+      "optimizeTitle": "只优化措辞与结构：保留原主体与主题，按要求修改（如圣诞改万圣节），不擅自补充细节",
       "outputLabel": "生成提示词输出",
       "outputPlaceholder": "生成的提示词将在此展示，可直接连线输出至图像生成器...",
       "placeholderDraft": "输入简要构想，例如：赛博朋克城市雨夜...",
+      "placeholderOptimize": "粘贴需要优化的提示词，可附修改要求，例如：把圣诞节主题改成万圣节主题...",
       "placeholderTranslate": "输入中文构思，例如：雨夜霓虹赛博朋克街道...",
       "removeImage": "移除图片",
       "thinkingStatus": "构思中...",
@@ -327,8 +331,6 @@
     },
     "generator": {
       "altConnectedReference": "已连接参考图",
-      "altGeneratedOutput": "生成结果图",
-      "artworkName": "工作流生成-{{model}}",
       "enableModelWarning": "请先去设置启用当前模型，或选择已启用的模型",
       "failedMessage": "生成失败：{{message}}",
       "gallerySaveFailed": "结果已生成，保存到图库失败",
@@ -345,15 +347,12 @@
       "promptConnectedCount_other": "已连接: {{count}} 个提示词 (\\n 拼接)",
       "promptMergedTitle_other": "已汇聚 {{count}} 个提示词输入，执行时将使用 \\n 拼接",
       "promptNotConnected": "未连接提示词",
-      "refineInFreeCanvas": "进自由画布精修",
       "regenerate": "重新生成",
       "rendering": "渲染中...",
       "retrySave": "重试保存",
       "runGenerate": "运行生成",
-      "freeCanvasButtonTitle": "载入到自由画布开启局部重绘、扩图或裁剪",
       "textOnly": "纯文生图",
       "unknownError": "未知异常",
-      "sentToFreeCanvasToast": "已送入自由画布，可继续精修",
       "stop": "停止"
     },
     "help": {
@@ -388,9 +387,9 @@
       "portTitle": "{{direction}}端口 · {{name}} · {{type}}",
       "nodePromptDesc": "写下画面描述，可用「润色」让文本模型扩写；输出文本提示词。",
       "nodeImageDesc": "上传本地图片，或导入自由画布的主图；输出图片作为图生图的参考。",
-      "nodeAssistantDesc": "扩写提示词、识图反推提示词、中译英三合一；输出的提示词可直接接到生图节点。",
+      "nodeAssistantDesc": "扩写或优化提示词、识图反推提示词、中译英四合一；输出的提示词可直接接到生图节点。",
       "nodeGeneratorDesc": "连接提示词与参考图，选择已启用的模型、比例和分辨率生成图片；结果自动存入图库，保存失败可在节点内重试。",
-      "nodePreviewDesc": "接在生图节点后面查看结果：前后对比、看大图、下载，或发送到自由画布继续精修。",
+      "nodePreviewDesc": "接在生图节点后面查看结果：看大图、下载，或发送到自由画布继续精修。",
       "historyNote": "撤销只恢复节点和连线，已经生成的结果不会回来；清空工作流时仍在生成的节点结果会被直接丢弃。",
       "gotIt": "知道了"
     },
@@ -416,14 +415,13 @@
       "resultImage": "成果图像"
     },
     "preview": {
-      "altCurrent": "当前图",
       "altFinalPreview": "最终预览",
-      "altOriginal": "原图",
       "artworkName": "成果预览-{{id}}",
       "connectHint": "将生成器节点的输出端口连线至此处",
       "downloadTitle": "下载高分辨率原图",
       "noImage": "尚未接收到生成图像",
       "saveImageTitle": "保存图像",
+      "downloadFailed": "下载失败，请检查网络或 CORS 代理后重试。",
       "sendToFreeCanvas": "送入自由画布精修",
       "freeCanvasTitle": "载入自由画布开启局部重绘、扩图或裁剪",
       "sentToFreeCanvasToast": "已送入自由画布，可继续精修"
@@ -1462,6 +1460,19 @@
     "sessionExpired": "服务端会话已过期，请重新登录。"
   },
   "imageOptions": {
+    "endpoint": {
+      "label": "输入图接口",
+      "mode": {
+        "auto": "自动",
+        "generations": "生成",
+        "edits": "编辑"
+      },
+      "hint": {
+        "auto": "带输入图时先以 JSON 请求 /v1/images/generations；网关拒绝 base64 时，同一请求自动改用 /v1/images/edits（multipart），并记住该网关。",
+        "generations": "带输入图时始终以 JSON 请求 /v1/images/generations；被拒绝时直接报错，不重试。",
+        "edits": "带输入图时始终请求 /v1/images/edits（multipart）；纯文生图仍走 /v1/images/generations。"
+      }
+    },
     "output": "输出",
     "quality": "质量",
     "auto": "自动",

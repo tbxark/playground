@@ -4,7 +4,6 @@ import { toast } from "sonner";
 import {
   Loader2Icon,
   PlayIcon,
-  SparklesIcon,
   ZapIcon,
 } from "lucide-react";
 import { WorkflowNode, useWorkflowStore } from "../../../stores/useWorkflowStore";
@@ -12,6 +11,7 @@ import { WorkflowNodeWrapper, WorkflowPortDef } from "./WorkflowNodeWrapper";
 import { useTranslation } from "react-i18next";
 import { modelDisplayName } from "../../../services/imageService";
 import { ImageOptionsPanel } from "../../ImageOptions/ImageOptionsPanel";
+import { InputEndpointModeControl } from "../../ImageOptions/InputEndpointModeControl";
 import {
   availableResolutions,
   getImageModelCaps,
@@ -19,7 +19,6 @@ import {
 } from "../../../../shared/imageModels";
 import { Button } from "../../ui/button";
 import { Progress } from "../../ui/progress";
-import { useFreeCanvasStore } from "../../../stores/useFreeCanvasStore";
 import { useLightboxStore } from "../../../stores/useLightboxStore";
 import { useRuntimeImageState } from "../../../hooks/useRuntimeImageState";
 import { cn } from "@/utils/cn";
@@ -40,7 +39,6 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
   // same node while the batch is still on an earlier node pays for it twice.
   const batchRunning = useWorkflowStore((state) => state.batchRunning);
   const stopNode = useWorkflowStore((state) => state.stopNode);
-  const addExternalImage = useFreeCanvasStore((state) => state.addExternalImage);
   const openLightbox = useLightboxStore((state) => state.open);
 
   const {
@@ -82,19 +80,6 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
       connectedImages.push({ edgeId: e.id, url: src.data.outputImageUrl });
     }
   });
-
-  const handleSendToFreeCanvas = async () => {
-    if (!node.data.outputImageUrl) return;
-    const cardId = await addExternalImage({
-      url: node.data.outputImageUrl,
-      name: t("workflow.generator.artworkName", { model }),
-      origin: "workflow",
-      galleryNanoid: node.data.galleryNanoid,
-    });
-    if (!cardId) return;
-    navigate("/");
-    toast.success(t("workflow.generator.sentToFreeCanvasToast"));
-  };
 
   return (
     <WorkflowNodeWrapper
@@ -243,6 +228,9 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
           </div>
         </div>
 
+        {/* How input images reach the gateway (JSON or multipart edits) */}
+        <InputEndpointModeControl />
+
         {/* gpt-image-2.5 / 2.6 parameters (format, quality, GIF/SVG, ...) */}
         <ImageOptionsPanel
           model={model}
@@ -288,45 +276,6 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
                 {t("workflow.generator.retrySave")}
               </Button>
             )}
-          </div>
-        )}
-
-        {/* Result Image Output Preview if generated */}
-        {isDone && node.data.outputImageUrl && (
-          <div className="relative group rounded-xl overflow-hidden border border-white/10 bg-black/40">
-            <button
-              type="button"
-              onClick={() =>
-                openLightbox({
-                  url: node.data.outputImageUrl!,
-                  title: t("workflow.generator.artworkName", { model }),
-                  subtitle: `${model} · ${size}`,
-                  fileName: `workflow_${node.id}.png`,
-                })
-              }
-              aria-label={t("preview.openAria", {
-                name: t("workflow.generator.altGeneratedOutput"),
-              })}
-              className="block w-full cursor-zoom-in"
-            >
-              <img
-                src={node.data.outputImageUrl}
-                alt={t("workflow.generator.altGeneratedOutput")}
-                className="w-full h-44 object-contain"
-              />
-            </button>
-            <div className="absolute inset-x-0 bottom-0 bg-black/60 p-2 flex items-center justify-center gap-2 opacity-100">
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => void handleSendToFreeCanvas()}
-                className="h-7 border-white/20 bg-white/10 text-white hover:bg-white hover:text-zinc-950 text-xs gap-1"
-                title={t("workflow.generator.freeCanvasButtonTitle")}
-              >
-                <SparklesIcon className="size-3" />
-                {t("workflow.generator.refineInFreeCanvas")}
-              </Button>
-            </div>
           </div>
         )}
 

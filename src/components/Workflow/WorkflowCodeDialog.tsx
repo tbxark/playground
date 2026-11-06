@@ -87,6 +87,7 @@ export function WorkflowCodeDialog({
         apiBaseUrl: imageConfig.apiBaseUrl,
         model: runtime.selectedModel,
         enabledModelIds: runtime.models.map((model) => model.id),
+        inputEndpointMode: imageConfig.inputEndpointMode,
       },
       llm: {
         apiBaseUrl: llmConfig.apiBaseUrl,

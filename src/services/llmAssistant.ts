@@ -4,6 +4,7 @@ import { i18n } from "@/i18n";
 import { CorsProxyMode } from "@/utils/proxy";
 import {
   PROMPT_ENHANCE_SYSTEM,
+  PROMPT_OPTIMIZE_SYSTEM,
   PROMPT_TRANSLATE_SYSTEM,
   PROMPT_VISION_SYSTEM,
   PROMPT_VISION_USER,
@@ -11,10 +12,17 @@ import {
 
 export {
   PROMPT_ENHANCE_SYSTEM,
+  PROMPT_OPTIMIZE_SYSTEM,
   PROMPT_TRANSLATE_SYSTEM,
   PROMPT_VISION_SYSTEM,
   PROMPT_VISION_USER,
 };
+
+/**
+ * Text-to-text assistant modes. "enhance" expands a brief idea; "optimize"
+ * only tidies the prompt and applies requested changes (no added detail).
+ */
+export type PromptTextMode = "enhance" | "optimize" | "translate";
 
 export type LlmConfig = {
   apiBaseUrl: string;
@@ -52,7 +60,7 @@ export function getOpenAiLlmClient(config: LlmConfig): OpenAI {
 export async function polishPrompt(
   prompt: string,
   config: LlmConfig,
-  mode: "enhance" | "translate" = "enhance",
+  mode: PromptTextMode = "enhance",
   signal?: AbortSignal
 ): Promise<string> {
   if (!config.apiKey?.trim()) {
@@ -63,7 +71,11 @@ export async function polishPrompt(
   }
 
   const systemPrompt =
-    mode === "translate" ? PROMPT_TRANSLATE_SYSTEM : PROMPT_ENHANCE_SYSTEM;
+    mode === "translate"
+      ? PROMPT_TRANSLATE_SYSTEM
+      : mode === "optimize"
+      ? PROMPT_OPTIMIZE_SYSTEM
+      : PROMPT_ENHANCE_SYSTEM;
 
   const client = getOpenAiLlmClient(config);
 

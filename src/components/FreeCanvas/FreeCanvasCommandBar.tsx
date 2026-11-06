@@ -1,4 +1,5 @@
 import { PromptImageOptions } from "@/components/ImageOptions/ImageOptionsPanel";
+import { InputEndpointModeControl } from "@/components/ImageOptions/InputEndpointModeControl";
 import { availableResolutions, selectedResolution } from "../../../shared/imageModels";
 import React, {
   useCallback,
@@ -799,6 +800,8 @@ export function FreeCanvasCommandBar() {
                   </button>
                 ))}
               </div>
+
+              <InputEndpointModeControl />
 
               <button
                 type="button"

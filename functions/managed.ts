@@ -29,6 +29,7 @@ import {
 } from "../shared/imageModels";
 import {
   PROMPT_ENHANCE_SYSTEM,
+  PROMPT_OPTIMIZE_SYSTEM,
   PROMPT_TRANSLATE_SYSTEM,
   PROMPT_VISION_SYSTEM,
   PROMPT_VISION_USER,
@@ -150,7 +151,11 @@ function assistantMessages(body: ServerAssistantRequest) {
     {
       role: "system",
       content:
-        body.kind === "translate" ? PROMPT_TRANSLATE_SYSTEM : PROMPT_ENHANCE_SYSTEM,
+        body.kind === "translate"
+          ? PROMPT_TRANSLATE_SYSTEM
+          : body.kind === "optimize"
+          ? PROMPT_OPTIMIZE_SYSTEM
+          : PROMPT_ENHANCE_SYSTEM,
     },
     { role: "user", content: body.prompt },
   ];
@@ -311,7 +316,13 @@ export function registerManagedRoutes(app: Hono, env: ServerEnv): void {
       return c.json<ServerErrorBody>({ error: "managed_config_incomplete" }, 503);
     }
     const body = await readJson<ServerAssistantRequest>(c);
-    if (!body || (body.kind !== "polish" && body.kind !== "translate" && body.kind !== "vision")) {
+    if (
+      !body ||
+      (body.kind !== "polish" &&
+        body.kind !== "optimize" &&
+        body.kind !== "translate" &&
+        body.kind !== "vision")
+    ) {
       return c.json<ServerErrorBody>({ error: "invalid_request" }, 400);
     }
     if (body.kind === "vision" ? !body.image : !body.prompt) {
