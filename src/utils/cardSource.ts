@@ -202,12 +202,33 @@ export async function copyCardImageToClipboard(
   return blobToDataUrlSafe(blob);
 }
 
-export function blobToDataUrlSafe(blob: Blob): Promise<string> {
+function sniffImageMime(bytes: Uint8Array): string | null {
+  const ascii = (start: number, length: number) =>
+    String.fromCharCode(...bytes.slice(start, start + length));
+  if (bytes[0] === 0x89 && ascii(1, 3) === "PNG") return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (ascii(0, 3) === "GIF") return "image/gif";
+  if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") return "image/webp";
+  if (ascii(0, 256).includes("<svg")) return "image/svg+xml";
+  return null;
+}
+
+/**
+ * Upstreams only accept `data:image/*` URLs. A blob with an empty or generic
+ * type (gateway downloads, legacy records) would otherwise read as
+ * `data:application/octet-stream`, so the type is recovered from the bytes.
+ */
+export async function blobToDataUrlSafe(blob: Blob): Promise<string> {
+  let source = blob;
+  if (!blob.type.toLowerCase().startsWith("image/")) {
+    const head = new Uint8Array(await blob.slice(0, 256).arrayBuffer());
+    source = new Blob([blob], { type: sniffImageMime(head) ?? "image/png" });
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as string);
     reader.onerror = () => reject(reader.error || new Error("blob-read-failed"));
-    reader.readAsDataURL(blob);
+    reader.readAsDataURL(source);
   });
 }
 

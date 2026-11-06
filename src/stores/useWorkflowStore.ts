@@ -18,6 +18,7 @@ import {
   putCanvasAsset,
 } from "../services/canvasAssetDb";
 import { dataUrlToBlob, fetchAsBlob } from "../utils/file";
+import { resolveCardDataUrl } from "../utils/cardSource";
 import { isWorkflowConnectionTypeCompatible } from "../components/Workflow/nodeCatalog";
 
 export type WorkflowNodeType = "prompt" | "image" | "generator" | "preview" | "assistant";
@@ -1089,7 +1090,7 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
         const negativePrompt = negativeParts.join(", ");
 
         // 2. Resolve connected image inputs (Supports multiple images)
-        const imageUrls: string[] = [];
+        const imageSources: Array<{ url: string; assetKey?: string }> = [];
         const imageEdges = state.edges.filter(
           (e) => e.toNodeId === nodeId && e.toPort === "image"
         );
@@ -1098,16 +1099,52 @@ export const useWorkflowStore = create<WorkflowGraphState>()(
           if (!sourceNode) return;
 
           if (sourceNode.type === "image" && sourceNode.data.imageUrl) {
-            imageUrls.push(sourceNode.data.imageUrl);
+            imageSources.push({
+              url: sourceNode.data.imageUrl,
+              assetKey: sourceNode.data.imageAssetKey,
+            });
           } else if (
             sourceNode.type === "generator" &&
             sourceNode.data.outputImageUrl
           ) {
-            imageUrls.push(sourceNode.data.outputImageUrl);
+            imageSources.push({
+              url: sourceNode.data.outputImageUrl,
+              assetKey: sourceNode.data.outputAssetKey,
+            });
           } else if (sourceNode.data.imageUrl) {
-            imageUrls.push(sourceNode.data.imageUrl);
+            imageSources.push({
+              url: sourceNode.data.imageUrl,
+              assetKey: sourceNode.data.imageAssetKey,
+            });
           }
         });
+
+        // Node images are blob: URLs backed by IndexedDB, which no upstream can
+        // fetch. Providers only accept http(s) or data:image URLs, so resolve
+        // every source to one of those before the request is assembled.
+        const imageUrls: string[] = [];
+        const { corsProxy, corsProxyMode } = useConfigStore.getState();
+        for (const source of imageSources) {
+          let resolved: string | null = null;
+          try {
+            resolved = await resolveCardDataUrl(
+              source,
+              corsProxy || undefined,
+              corsProxyMode
+            );
+          } catch {
+            resolved = null;
+          }
+          if (!resolved) {
+            toast.error(
+              i18n.t("workflowStore.toastInputImageUnavailable", {
+                title: genNode.title,
+              })
+            );
+            return;
+          }
+          if (!imageUrls.includes(resolved)) imageUrls.push(resolved);
+        }
 
         if (!prompt.trim() && imageUrls.length === 0) {
           toast.warning(

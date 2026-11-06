@@ -517,6 +517,7 @@
     "toastAssistantFailed": "Assistant node \"{{title}}\" failed: {{message}}",
     "toastGeneratorFailed": "Generator node \"{{title}}\" failed: {{message}}",
     "toastGeneratorNeedInput": "Generator node \"{{title}}\" has no prompt or reference image connected",
+    "toastInputImageUnavailable": "Generator node \"{{title}}\" could not read a connected input image. Re-upload it or run the upstream node again.",
     "toastModelDisabled": "The model used by node \"{{title}}\" is disabled. Enable it in Settings or choose another model",
     "toastSharedModelUnavailable": "The model used by node \"{{title}}\" is not provided by the shared server. Choose one of the shared models",
     "toastModelNotSelected": "Generator node \"{{title}}\" has no model selected yet. Pick one in the node dropdown or in Settings",

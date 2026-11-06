@@ -92,3 +92,15 @@ export type ServerErrorBody = {
  * forwarding the request would silently generate from text only.
  */
 export const SERVER_ERROR_IMAGE_INPUT_UNSUPPORTED = "image_input_unsupported";
+
+/**
+ * Upstream image inputs (`imageUrls`, `maskUrl`) must be a fetchable http(s)
+ * URL or a `data:image/*;base64,` URL. Anything else (`blob:`, bare base64,
+ * `data:application/octet-stream`) only fails at the provider with an opaque
+ * message, so the managed endpoints reject it up front. Mirrored by
+ * `validImageInput` in server/managed.go.
+ */
+export function isValidImageInput(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  return /^https?:\/\/\S+$/i.test(value) || /^data:image\/[a-z0-9.+-]+;base64,/i.test(value);
+}

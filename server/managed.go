@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -132,6 +133,10 @@ func handleManagedGenerate(w http.ResponseWriter, r *http.Request, cfg config, c
 		return
 	}
 	if body.Model == "" || body.Size == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if !validImageInputs(body.ImageURLs) || (body.MaskURL != "" && !validImageInput(body.MaskURL)) {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -446,6 +451,27 @@ func checkOrigin(r *http.Request) (allowed bool, valid bool) {
 		return false, false
 	}
 	return strings.EqualFold(parsed.Host, r.Host), true
+}
+
+var dataImagePrefix = regexp.MustCompile(`(?i)^data:image/[a-z0-9.+-]+;base64,`)
+
+// validImageInput mirrors isValidImageInput in shared/contracts.ts: an image
+// input is an http(s) URL or a data:image/*;base64 URL, nothing else.
+func validImageInput(value string) bool {
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return !strings.ContainsAny(value, " \t\r\n")
+	}
+	return dataImagePrefix.MatchString(value)
+}
+
+func validImageInputs(values []string) bool {
+	for _, value := range values {
+		if !validImageInput(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func containsString(values []string, target string) bool {

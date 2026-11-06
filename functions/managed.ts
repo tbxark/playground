@@ -13,6 +13,7 @@ import {
   SERVER_ERROR_IMAGE_INPUT_UNSUPPORTED,
   SERVER_GENERATE_PATH,
   SERVER_TASK_PREFIX,
+  isValidImageInput,
   type ServerAssistantRequest,
   type ServerAssistantResponse,
   type ServerErrorBody,
@@ -198,6 +199,13 @@ export function registerManagedRoutes(app: Hono, env: ServerEnv): void {
       typeof body.model !== "string" ||
       typeof body.prompt !== "string" ||
       typeof body.size !== "string"
+    ) {
+      return c.json<ServerErrorBody>({ error: "invalid_request" }, 400);
+    }
+    if (
+      (body.imageUrls !== undefined &&
+        (!Array.isArray(body.imageUrls) || !body.imageUrls.every(isValidImageInput))) ||
+      (body.maskUrl !== undefined && !isValidImageInput(body.maskUrl))
     ) {
       return c.json<ServerErrorBody>({ error: "invalid_request" }, 400);
     }

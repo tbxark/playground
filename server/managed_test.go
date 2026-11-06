@@ -249,6 +249,35 @@ func TestManagedGenerateForwardsImageInputsOnGateway(t *testing.T) {
 	}
 }
 
+func TestManagedGenerateRejectsUnfetchableImageInputs(t *testing.T) {
+	recorder := &captureRecorder{}
+	upstreamServer := httptest.NewServer(recorder.handler(http.StatusOK, `{}`))
+	defer upstreamServer.Close()
+	cfg := managedTestConfig(t, upstreamServer.URL)
+	server := newTestServer(t, cfg)
+
+	for name, body := range map[string]map[string]any{
+		"blob url":     {"imageUrls": []string{"blob:http://localhost/1234"}},
+		"bare base64":  {"imageUrls": []string{"AAAA"}},
+		"octet stream": {"imageUrls": []string{"data:application/octet-stream;base64,AAAA"}},
+		"bad mask":     {"imageUrls": []string{"https://example.com/a.png"}, "maskUrl": "blob:x"},
+	} {
+		body["model"], body["prompt"], body["size"] = "flux-1-dev", "a cat", "1:1"
+		request := managedRequest(t, cfg, http.MethodPost, server.URL+managedGeneratePath, body)
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, response.StatusCode)
+		}
+	}
+	if n := len(recorder.requests()); n != 0 {
+		t.Errorf("upstream calls = %d, want 0", n)
+	}
+}
+
 func TestManagedGenerateRejectsUnknownModel(t *testing.T) {
 	recorder := &captureRecorder{}
 	upstreamServer := httptest.NewServer(recorder.handler(http.StatusOK, `{}`))

@@ -506,6 +506,7 @@
     "toastAssistantFailed": "灵感助手节点「{{title}}」执行失败：{{message}}",
     "toastGeneratorFailed": "生图节点「{{title}}」执行失败：{{message}}",
     "toastGeneratorNeedInput": "生成节点「{{title}}」未连接或输入提示词或参考图",
+    "toastInputImageUnavailable": "生成节点「{{title}}」无法读取已连接的输入图片，请重新上传或重新运行上游节点",
     "toastModelDisabled": "生图节点「{{title}}」使用的模型已停用，请在设置中启用或重新选择模型",
     "toastSharedModelUnavailable": "生图节点「{{title}}」使用的模型不在共享服务器列表中，请选择共享模型",
     "toastModelNotSelected": "生图节点「{{title}}」尚未选择模型，请先在节点下拉框或设置中选择",
