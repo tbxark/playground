@@ -1,4 +1,5 @@
 import { useConfigStore } from "@/stores/useConfigStore";
+import { compressImageToDataUrl, REVIEW_IMAGE_MAX_EDGE } from "@/utils/compressImage";
 import { getRuntimeMode } from "./runtimeConfig";
 import {
   imageToPrompt,
@@ -33,11 +34,15 @@ export function requestPolish(
   return polishPrompt(prompt, localLlmConfig(), mode, signal);
 }
 
-/** Vision image-to-prompt through the active backend. */
-export function requestImageToPrompt(
-  imageDataUrl: string,
+/**
+ * Vision image-to-prompt through the active backend. The image is downscaled
+ * to 1024px on its long edge and sent as base64 for both backends.
+ */
+export async function requestImageToPrompt(
+  image: string,
   signal?: AbortSignal
 ): Promise<string> {
+  const imageDataUrl = await compressImageToDataUrl(image, REVIEW_IMAGE_MAX_EDGE, signal);
   if (getRuntimeMode() === "managed") {
     return managedAssistant({ kind: "vision", image: imageDataUrl }, signal);
   }

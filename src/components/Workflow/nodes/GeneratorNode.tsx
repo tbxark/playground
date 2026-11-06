@@ -29,7 +29,7 @@ const PORTS: WorkflowPortDef[] = [
   { id: "output", name: "workflow.port.resultImage", type: "image", direction: "output" },
 ];
 
-const RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4"];
+const RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "auto"];
 
 export function GeneratorNode({ node }: { node: WorkflowNode }) {
   const { t } = useTranslation();
@@ -204,7 +204,7 @@ export function GeneratorNode({ node }: { node: WorkflowNode }) {
                     : "bg-white/5 border-transparent text-zinc-400 hover:text-white"
                 )}
               >
-                {r}
+                {r === "auto" ? t("freeCanvas.sizeAuto") : r}
               </button>
             ))}
           </div>
